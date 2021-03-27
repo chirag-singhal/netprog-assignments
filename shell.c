@@ -2,13 +2,28 @@
 #include <string.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/signal.h>
+#include <sys/stat.h>
 #include <errno.h>
 
-#define MAX_CMD_LEN 512
+#define MAX_CMD_LEN 1024
 
 const char * PATH;
+
+typedef struct _CMD_OPTS_REDIRECT {
+    // program is first word in opts
+    // last word in opts is NULL
+    char * program;
+    char ** opts;
+    size_t n_opts;
+    char * in_redirect_file;
+    char * out_redirect_file;
+    int is_append;
+} CMD_OPTS_REDIRECT;
+
+////////////////////////////////////////
 
 void err_exit(const char *err_msg) {
     perror(err_msg);
@@ -70,18 +85,83 @@ void execute_cmd(const char **cmd_toks, int n_cmd_toks) {
     }
 }
 
+void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
+    if (cmd->in_redirect_file != NULL) {
+        int in_redirect_fd = open(cmd->in_redirect_file, O_CREAT | O_RDONLY, 0664);
+        if (in_redirect_fd < 0) {
+            char err_msg[100];
+            fprintf(err_msg, "Cannot open file '%s'", cmd->in_redirect_file);
+            err_exit(err_msg);
+        }
+        else {
+            dup2(in_redirect_fd, 0);
+        }
+    }
+
+    if (cmd->is_append && cmd->out_redirect_file != NULL) {
+        int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY | O_APPEND, 0664);
+        if (out_redirect_fd < 0) {
+            char err_msg[100];
+            fprintf(err_msg, "Cannot open file '%s'", cmd->out_redirect_file);
+            err_exit(err_msg);
+        }
+        else {
+            dup2(out_redirect_fd, 1);
+        }
+    }
+    else if (!cmd->is_append && cmd->out_redirect_file != NULL) {
+        int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY, 0664);
+        if (out_redirect_fd < 0) {
+            char err_msg[100];
+            fprintf(err_msg, "Cannot open file '%s'", cmd->out_redirect_file);
+            err_exit(err_msg);
+        }
+        else {
+            dup2(out_redirect_fd, 1);
+        }
+    }
+
+
+}
+
+void execute_pipe(CMD_OPTS single_cmd1, CMD_OPTS single_cmd2) {
+    int pipe_fd[2];
+    if (pipe(pipe_fd) == -1) {
+        err_exit("Error in `pipe`. Exiting...");
+    }
+
+}
+
+void execute_cmd(char * cmd) {
+
+}
+
 int main() {
 
-    PATH = getenv("PATH");
-    char cmd[MAX_CMD_LEN];
-
+    const char * PATH = getenv("PATH");
+    
     while (1) {
         printf(">> ");
-        fgets(cmd, MAX_CMD_LEN, stdin);
+
+        size_t max_cmd_len = MAX_CMD_LEN + 1;
+        char * cmd = malloc(sizeof(char) * max_cmd_len);
+        ssize_t cmd_len = getline(&cmd, &max_cmd_len, stdin);
+
+        if (cmd_len == -1 || cmd_len == 0 || (cmd_len >= 1 && cmd[0] == '\n')) {
+            continue;
+        }
 
         // Spawn a new process group for the `cmd`
-        //
+        
+        char * tmp_cmd = strdup(cmd);
+        execute_cmd(tmp_cmd);
+        free(tmp_cmd);
+
+
+
         // Wait till `cmd` is completed
+
+        free(cmd);
     }
 
     return EXIT_SUCCESS;
