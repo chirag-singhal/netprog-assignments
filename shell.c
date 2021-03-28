@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/signal.h>
 #include <sys/stat.h>
@@ -15,11 +16,10 @@
 #define MAX_CMD_LEN 1024
 
 
-const char * PATH;
-
 typedef struct _CMD_OPTS_REDIRECT {
     // program is first word in opts
     // last word in opts is NULL
+    // n_opts is the length of opts excluding the last NULL
     // By default, in_fd=0, out_fd=1 unless modified by piping
     char * program;
     char ** opts;
@@ -31,12 +31,28 @@ typedef struct _CMD_OPTS_REDIRECT {
     int is_append;
 } CMD_OPTS_REDIRECT;
 
+
+typedef struct _SHORT_CUT_COMMAND {
+    int index;
+    char *cmd;
+    struct _SHORT_CUT_COMMAND *next;
+} SHORT_CUT_COMMAND;
+
+typedef struct _LOOKUP_TABLE {
+    SHORT_CUT_COMMAND *head;
+} LOOKUP_TABLE;
+
 ////////////////////////////////////////
 
 void err_exit(const char *err_msg) {
     perror(err_msg);
     exit(EXIT_FAILURE);
 }
+
+
+const char * PATH;
+bool sigint_rcvd = false;
+LOOKUP_TABLE* sc_lookup_table;
 
 /*
 char **parser_cmd(const char *cmd ) {
@@ -173,7 +189,28 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
 
 }
 
-void execute_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
+void execute_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd, CMD_OPTS_REDIRECT * out_cmd) {
+    // 'in_cmd.out_fd' are 'out_cmd.in_fd' are set in this function
+    int pipe_fd[2];
+    
+    in_cmd->out_fd = pipe_fd[1];
+    out_cmd->in_fd = pipe_fd[0];
+
+    pid_t child_cmd_pid = fork();
+    if(child_cmd_pid < 0) {
+        err_exit("Error in forking. Exiting...\n");
+    }
+    if (child_cmd_pid == 0) {
+        // create new process for the single command
+        execute_single_cmd(in_cmd);
+    }
+    else {
+        int status;
+        waitpid(child_cmd_pid, &status, 0);
+    }
+}
+
+void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     // cmds[0] and cmds[n_cmds-1] already have appropriate in_fd and out_fd
     // set by calling function. By default, it is stdin/stdout.
     // If `||` or `|||` is used, then the out_fd of the last run process
@@ -224,9 +261,10 @@ void execute_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     }
 }
 
-void execute_double_pipe_cmd(CMD_OPTS_REDIRECT ** in_cmd, size_t n_in_cmd,
-    CMD_OPTS_REDIRECT ** out1_cmd, ssize_t n_out1_cmd,
-    CMD_OPTS_REDIRECT ** out2_cmd, ssize_t n_out2_cmd) {
+void execute_double_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
+    CMD_OPTS_REDIRECT * out1_cmd, CMD_OPTS_REDIRECT * out2_cmd) {
+    // 'in_cmd.out_fd' are set in this function
+    // 'out1_cmd.in_fd' and 'out2_cmd.in_fd' are set in this function
     int pipe_fd[2][2];
     if (pipe(pipe_fd[0]) == -1) {
         err_exit("Error in pipe. Exiting...\n");
@@ -234,17 +272,202 @@ void execute_double_pipe_cmd(CMD_OPTS_REDIRECT ** in_cmd, size_t n_in_cmd,
     if (pipe(pipe_fd[1]) == -1) {
         err_exit("Error in pipe. Exiting...\n");
     }
-    in_cmd[n_in_cmd-1]->out_fd = pipe_fd[0][1];
-    execute_pipe_cmd(in_cmd, n_in_cmd);
-    ssize_t n_bytes = tee();
+
+    in_cmd->out_fd = pipe_fd[0][1];
+    out1_cmd->in_fd = pipe_fd[0][0];
+    out2_cmd->in_fd = pipe_fd[1][0];
+    
+    pid_t child_cmd_pid = fork();
+    if(child_cmd_pid < 0) {
+        err_exit("Error in forking. Exiting...\n");
+    }
+    if (child_cmd_pid == 0) {
+        // create new process for the single command
+        execute_single_cmd(in_cmd);
+    }
+    else {
+        int status;
+        waitpid(child_cmd_pid, &status, 0);
+    }
+    
+    tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
+}
+
+void execute_triple_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
+    CMD_OPTS_REDIRECT * out1_cmd, CMD_OPTS_REDIRECT * out2_cmd, CMD_OPTS_REDIRECT * out3_cmd) {
+    // 'in_cmd.out_fd' are set in this function
+    // 'out1_cmd.in_fd', 'out2_cmd.in_fd' and 'out3_cmd.in_fd are set in this function
+    int pipe_fd[3][2];
+    if (pipe(pipe_fd[0]) == -1) {
+        err_exit("Error in pipe. Exiting...\n");
+    }
+    if (pipe(pipe_fd[1]) == -1) {
+        err_exit("Error in pipe. Exiting...\n");
+    }
+    if (pipe(pipe_fd[2]) == -1) {
+        err_exit("Error in pipe. Exiting...\n");
+    }
+
+    in_cmd->out_fd = pipe_fd[0][1];
+    out1_cmd->in_fd = pipe_fd[0][0];
+    out2_cmd->in_fd = pipe_fd[1][0];
+    out3_cmd->in_fd = pipe_fd[2][0];
+    
+    pid_t child_cmd_pid = fork();
+    if(child_cmd_pid < 0) {
+        err_exit("Error in forking. Exiting...\n");
+    }
+    if (child_cmd_pid == 0) {
+        // create new process for the single command
+        execute_single_cmd(in_cmd);
+    }
+    else {
+        int status;
+        waitpid(child_cmd_pid, &status, 0);
+    }
+    
+    tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
+    tee(pipe_fd[1][0], pipe_fd[2][1], INT_MAX, 0);
+}
+
+CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
+    // 'cmd' is in the format of <program> <opt> ... <opt>
+    if (cmd == NULL)
+        return NULL;
+    
+    CMD_OPTS_REDIRECT * single_cmd = malloc(sizeof(CMD_OPTS_REDIRECT));
+    
+    char * tmp_cmd = strdup(cmd);
+    char * token = strtok(tmp_cmd, " ");
+    if (token != NULL) {
+        size_t n_opts;
+        for(int i = 0, n_opts = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == ' ')? n_opts++: 0, i++);
+        
+        single_cmd->opts = malloc((n_opts + 1) * sizeof(char *));
+        // +1 for the ending NULL
+        
+        int opt_idx = 0;
+        single_cmd->program = token;
+        single_cmd->opts[opt_idx++] = token;
+        
+        token = strtok(NULL, " ");
+        while (token != NULL) {
+            single_cmd->opts[opt_idx++] = token;
+            token = strtok(NULL, " ");
+        }
+        single_cmd->opts[opt_idx] = NULL;
+
+        single_cmd->n_opts = n_opts;
+        single_cmd->in_fd = 0;
+        single_cmd->out_fd = 1;
+        single_cmd->in_redirect_file = NULL;
+        single_cmd->out_redirect_file = NULL;
+        single_cmd->is_append = 0;
+
+        return single_cmd;
+    }
+    return NULL;
+}
+
+CMD_OPTS_REDIRECT * parse_pipe_cmd(char * cmd, char ** new_cmd) {
+    // 'cmd' is in the format of <single_cmd> | <multiple_cmd>
+    if (cmd == NULL) {
+        *new_cmd = NULL;
+        return NULL;
+    }
+
+    char * tmp_cmd = strdup(cmd);
+    char * token = strtok(tmp_cmd, "|");
+    if (token != NULL) {
+        // trim trailing space
+        size_t token_len = strlen(token);
+        if (token[token_len-1] == ' ')
+            token[token_len-1] = '\0';
+
+        CMD_OPTS_REDIRECT * in_cmd = parse_single_cmd(token);
+        
+        token = strtok(NULL, "|");
+        if (token != NULL) {
+            // trim leading space
+            if (token[0] == ' ')
+                token = token + 1;
+            
+            // trim trailing space
+            token_len = strlen(token);
+            if (token[token_len-1] == ' ')
+                token[token_len-1] = '\0';
+
+            *new_cmd = token;
+        }
+
+        return in_cmd;
+    }
+    return NULL;
+}
+
+CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
+    // 'cmd' is in the format of <single_cmd> | ... | <single_cmd>
+    if (cmd == NULL) {
+        *n_pipe_cmds = 0;
+        return NULL;
+    }
+
+    char * tmp_cmd = strdup(cmd);
+    
+    size_t _n_pipe_cmds;
+    for(int i = 0, _n_pipe_cmds = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == '|')? _n_pipe_cmds++: 0, i++);
+
+    CMD_OPTS_REDIRECT ** pipe_cmds = malloc(_n_pipe_cmds * sizeof(CMD_OPTS_REDIRECT *));
+    *n_pipe_cmds = _n_pipe_cmds;
+
+    int cmd_idx = 0; size_t token_len;
+    char * token = strtok(tmp_cmd, "|");
+    while (token != NULL) {
+        // trim leading space
+        if (token[0] == ' ')
+            token = token + 1;
+        
+        // trim trailing space
+        token_len = strlen(token);
+        if (token[token_len-1] == ' ')
+            token[token_len-1] = '\0';
+        
+        pipe_cmds[cmd_idx++] = parse_single_cmd(token);
+        token =  strtok(NULL, "|");
+    }
+
+    return pipe_cmds;
+}
+
+void parse_double_pipe_cmd(char * cmd) {
+    // 'cmd' is in the format of <multiple_cmds> || <multiple_cmds> , <multiple_cmds>
+    if (cmd == NULL) {
+        return;
+    }
+    
+    char * tmp_cmd = strdup(cmd);
+    char * token = strtok(tmp_cmd, "|,");
+    while (token != NULL) {
+        
+    }
+}
+
+void parse_triple_pipe_cmd(char * cmd) {
+    // cmd1 || cmd2 || cmd3 , cmd4, cmd5, cmd6
+    // cmd1 -> cmd2, cmd5, cmd6
+    // cmd2 -> cmd3, cmd4
+    // c1 || c2 | c3, c4
+    return;
 }
 
 void execute(char * cmd) {
     CMD_OPTS_REDIRECT * single_cmd = malloc(sizeof(CMD_OPTS_REDIRECT));
     single_cmd->program = cmd;
-    single_cmd->opts = malloc(2*sizeof(char *));
+    single_cmd->opts = malloc(3*sizeof(char *));
     single_cmd->opts[0] = cmd;
-    single_cmd->opts[1] = NULL;
+    single_cmd -> opts[1] = malloc(sizeof(char) * 3);
+    single_cmd -> opts[1] = "3d";
+    single_cmd->opts[2] = NULL;
     single_cmd->n_opts = 1;
     single_cmd->in_fd = 0;
     single_cmd->out_fd = 1;
@@ -258,32 +481,126 @@ void prompt() {
     printf(">> ");
 }
 
+void sigint_handler(int sig) {
+    sigint_rcvd = true;
+}
+
+void insert_cmd(int index, char* cmd) {
+    if(sc_lookup_table -> head == NULL) {
+        sc_lookup_table -> head = malloc(sizeof(SHORT_CUT_COMMAND));
+        sc_lookup_table -> head -> index = index;
+        sc_lookup_table -> head -> cmd = malloc(sizeof(char) * (strlen(cmd) + 1));
+        strcpy(sc_lookup_table -> head -> cmd, cmd);
+        sc_lookup_table -> head -> next = NULL;
+        return;
+    }
+    SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
+    while(next_cmd != NULL) {
+        if(next_cmd -> index == index) {
+            free(next_cmd -> cmd);
+            next_cmd -> cmd = malloc(sizeof(char) * (strlen(cmd) + 1));
+            strcpy(next_cmd -> cmd, cmd);
+            return;
+        }
+        next_cmd = next_cmd -> next;
+    }
+    next_cmd = sc_lookup_table -> head;
+    sc_lookup_table -> head = malloc(sizeof(SHORT_CUT_COMMAND));
+    sc_lookup_table -> head -> index = index;
+    sc_lookup_table -> head -> cmd = malloc(sizeof(char) * (strlen(cmd) + 1));
+    strcpy(sc_lookup_table -> head -> cmd, cmd);
+    sc_lookup_table -> head -> next = next_cmd;
+    return;
+}
+
+void delete_cmd(int index, char* cmd) {
+    if(sc_lookup_table -> head == NULL) {
+        err_exit("Error: No entry to delete in lookup table. Exiting...");
+        return;
+    }
+    SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
+    SHORT_CUT_COMMAND* prev_cmd = NULL;
+    while(next_cmd != NULL) {
+        if(next_cmd -> index == index) {
+           prev_cmd -> next = next_cmd -> next;
+           free(next_cmd -> cmd);
+           free(next_cmd);
+           return;
+        }
+        prev_cmd = next_cmd;
+        next_cmd = next_cmd -> next;
+    }
+    err_exit("Error: Cannot find matching entry to delete in lookup table. Exiting...");
+    return;
+}
+
+char * search_cmd(int index) {
+    SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
+    while(next_cmd != NULL) {
+        if(next_cmd -> index == index) {
+            return next_cmd -> cmd;
+        }
+        next_cmd = next_cmd -> next;
+    }
+    return NULL;
+}
+
 int main() {
 
-    const char * PATH = getenv("PATH");
+    PATH = getenv("PATH");
+    sc_lookup_table = malloc(sizeof(LOOKUP_TABLE));
+    sc_lookup_table -> head = NULL;
+
+    struct sigaction sigint;
+    sigint.sa_handler = sigint_handler;
+    sigint.sa_flags = 0;
+    sigemptyset(&sigint.sa_mask);
+
+
+    if (sigaction(SIGINT, &sigint, NULL) == -1)
+        err_exit("nError in sigaction SIGUSR1!\n");
     
     while (1) {
+        
         prompt();
 
-        size_t max_cmd_len = MAX_CMD_LEN + 1;
-        char * cmd = malloc(sizeof(char) * max_cmd_len);
-        ssize_t cmd_len = getline(&cmd, &max_cmd_len, stdin);
-
-        if (cmd_len == -1 || cmd_len == 0 || (cmd_len >= 1 && cmd[0] == '\n')) {
-            continue;
-        }
-
+        ssize_t cmd_len;
+        char * cmd;
         bool is_bg_proc = false;
 
-        cmd[cmd_len - 1] = '\0';
+        if(sigint_rcvd) {
+            int index;
+            scanf("%d", &index);
+            cmd = search_cmd(index);
+            cmd_len = strlen(cmd);
+            if(cmd == NULL) {
+                err_exit("Error : No such command in lookup table with the given index. Exiting...\n");
+            }
+            sigint_rcvd = false;
+        }
 
-        if(cmd[cmd_len - 2] == '&') {
+        else {
+            size_t max_cmd_len = MAX_CMD_LEN + 1;
+            cmd = malloc(sizeof(char) * max_cmd_len);
+            cmd_len = getline(&cmd, &max_cmd_len, stdin);
+
+            if (cmd_len == -1 || cmd_len == 0 || (cmd_len >= 1 && cmd[0] == '\n')) {
+                continue;
+            }
+
+            cmd[cmd_len - 1] = '\0';
+            cmd_len = strlen(cmd);
+        }
+
+        if(cmd[cmd_len - 1] == '&') {
             is_bg_proc = true;
-            cmd[cmd_len - 2] = '\0';
+            if (cmd[cmd_len - 2] == ' ')
+                cmd[cmd_len - 2] = '\0';
+            else
+                cmd[cmd_len - 1] = '\0';
         } 
-
+        
         cmd_len = strlen(cmd);
-
         // Spawn a new process group for the `cmd`
         
         char * tmp_cmd = strdup(cmd);
@@ -303,11 +620,51 @@ int main() {
             	//setpgid(0, child_executer);
 
 			int curr_pid = getpid();
-			printf("Coordinating Process details:\n");
+			printf("Process details:\n");
 			printf("\tProcess Id: %d\n", curr_pid);
-			printf("\tProcess Group Id: %d\n", getpgid(curr_pid));
+			printf("\tProcess Group Id: %d %d\n", getpgid(curr_pid), tcgetpgrp(STDIN_FILENO));
 			printf("\n");
 
+            char *tmp_cmd_sc = strdup(cmd);
+            bool sc_error = false;
+            char *token = strtok(tmp_cmd_sc, " ");
+            if (strcmp(token, "sc") == 0) {
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    sc_error = true;
+                }
+                if(strcmp(token, "-i") == 0) {
+                    token = strtok(NULL, " ");
+                    if(token == NULL) {
+                        sc_error = true;
+                    }
+                    int index = atoi(token);
+                    token = strtok(NULL, " ");
+                    if(token == NULL) {
+                        sc_error = true;
+                    }
+                    insert_cmd(index, token);
+                }
+                else if(strcmp(token, "-d") == 0) {
+                    token = strtok(NULL, " ");
+                    if(token == NULL) {
+                        sc_error = true;
+                    }
+                    int index = atoi(token);
+                    token = strtok(NULL, " ");
+                    if(token == NULL) {
+                        sc_error = true;
+                    }
+                    delete_cmd(index, token);
+                }
+                else {
+                     sc_error = true;
+                }
+                if(sc_error) {
+                    err_exit("Error Correct format for shortcut command is sc -i <index> <cmd> or sc -d <index> <cmd>. Exiting...\n");
+                }
+            } 
+            free(tmp_cmd_sc);
 			execute(tmp_cmd);
 		}
         else {
@@ -317,7 +674,7 @@ int main() {
 			}
 
 			signal(SIGTTOU, SIG_IGN);
-			if(tcsetpgrp(STDIN_FILENO, child_exec) == -1) {
+			if(!is_bg_proc && tcsetpgrp(STDIN_FILENO, child_exec) == -1) {
                 err_exit("Error in setting foreground process. Exiting...\n");
 			}
 
@@ -326,12 +683,12 @@ int main() {
             int status;
 
             if(!is_bg_proc)
-                waitpid(child_exec, &status, WUNTRACED);
+                waitpid(child_exec, &status, WNOHANG);
+            tcsetpgrp(0, getpid());
+			signal(SIGTTOU, SIG_DFL);
         }
 
         free(tmp_cmd);
-
-        // Wait till `cmd` is completed
 
         free(cmd);
     }
