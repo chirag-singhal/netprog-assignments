@@ -45,7 +45,7 @@ typedef struct _LOOKUP_TABLE {
 ////////////////////////////////////////
 
 void err_exit(const char *err_msg) {
-    perror(err_msg);
+    printf("%s\n", err_msg);
     exit(EXIT_FAILURE);
 }
 
@@ -110,6 +110,13 @@ void execute_cmd(const char **cmd_toks, int n_cmd_toks) {
     }
 }
 */
+
+void free_cmd_struct(CMD_OPTS_REDIRECT ** cmd, size_t n_cmds) {
+    for (size_t i = 0; i < n_cmds; ++i) {
+        free(cmd[i]);
+    }
+    free(cmd);
+}
 
 char * search_cmd_path(const char * program) {
     char * path_dup = strdup(PATH);
@@ -219,7 +226,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     if (n_cmds < 1) {
         err_exit("Invalid command. Exiting...\n");
     }
-
+    printf("execute: %lu\n", n_cmds);
     if (n_cmds > 1) {
         int pipe_fd[n_cmds-1][2];
         
@@ -227,16 +234,18 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
             if (pipe(pipe_fd[i-1]) == -1) {
                 err_exit("Error in pipe. Exiting...\n");
             }
-            
-            cmds[i-1]->out_fd = pipe_fd[i-1][1];
-            cmds[i]->in_fd = pipe_fd[i-1][0];
 
+            cmds[i-1]->out_fd = pipe_fd[i-1][1];
+            printf("askjn %d %d\n", cmds[i]->in_fd, pipe_fd[i-1][0]);
+            cmds[i]->in_fd = pipe_fd[i-1][0];
+            printf("execute single: %s\n", cmds[i-1]->program);
             pid_t child_cmd_pid = fork();
             if(child_cmd_pid < 0) {
                 err_exit("Error in forking. Exiting...\n");
             }
             if (child_cmd_pid == 0) {
                 // create new process for the single command
+                printf("execute single: %s\n", cmds[i-1]->program);
                 execute_single_cmd(cmds[i-1]);
             }
             else {
@@ -335,15 +344,14 @@ CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
     // 'cmd' is in the format of <program> <opt> ... <opt>
     if (cmd == NULL)
         return NULL;
-    
+
     CMD_OPTS_REDIRECT * single_cmd = malloc(sizeof(CMD_OPTS_REDIRECT));
     
     char * tmp_cmd = strdup(cmd);
     char * token = strtok(tmp_cmd, " ");
     if (token != NULL) {
-        size_t n_opts;
-        for(int i = 0, n_opts = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == ' ')? n_opts++: 0, i++);
-        
+        size_t n_opts; int i;
+        for(i = 0, n_opts = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == ' ')? n_opts++: 0, i++);
         single_cmd->opts = malloc((n_opts + 1) * sizeof(char *));
         // +1 for the ending NULL
         
@@ -364,7 +372,6 @@ CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
         single_cmd->in_redirect_file = NULL;
         single_cmd->out_redirect_file = NULL;
         single_cmd->is_append = 0;
-
         return single_cmd;
     }
     return NULL;
@@ -414,16 +421,19 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
     }
 
     char * tmp_cmd = strdup(cmd);
+ 
+    size_t _n_pipe_cmds; int i;
+    for(i = 0, _n_pipe_cmds = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == '|')? ++_n_pipe_cmds: 0, i++);
     
-    size_t _n_pipe_cmds;
-    for(int i = 0, _n_pipe_cmds = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == '|')? _n_pipe_cmds++: 0, i++);
-
     CMD_OPTS_REDIRECT ** pipe_cmds = malloc(_n_pipe_cmds * sizeof(CMD_OPTS_REDIRECT *));
     *n_pipe_cmds = _n_pipe_cmds;
 
     int cmd_idx = 0; size_t token_len;
+    printf("cmd: %s\n", tmp_cmd);
     char * token = strtok(tmp_cmd, "|");
+
     while (token != NULL) {
+        printf("asaaaaaaa %s\n", token);
         // trim leading space
         if (token[0] == ' ')
             token = token + 1;
@@ -432,9 +442,9 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         token_len = strlen(token);
         if (token[token_len-1] == ' ')
             token[token_len-1] = '\0';
-        
         pipe_cmds[cmd_idx++] = parse_single_cmd(token);
-        token =  strtok(NULL, "|");
+        printf("parse: %s\n", token);
+        token = strtok(NULL, "|");
     }
 
     return pipe_cmds;
@@ -444,16 +454,19 @@ void parse_cmd(char * cmd) {
     if (cmd == NULL) {
         return;
     }
-    
+
     size_t cmd_len = strlen(cmd);
     char * tmp_cmd = strdup(cmd);
     char * token = strstr(tmp_cmd, "||");
 
     // commands till '||'
     char * first_token = malloc(MAX_CMD_LEN * sizeof(char));
-    memcpy(first_token, tmp_cmd, token - tmp_cmd);
+    if (token == NULL)
+        first_token = tmp_cmd;
+    else
+        memcpy(first_token, tmp_cmd, token - tmp_cmd);
 
-    size_t * n_pipe0_cmds;
+    size_t * n_pipe0_cmds = malloc(sizeof(size_t));
     CMD_OPTS_REDIRECT ** pipe0_cmds = parse_multiple_pipe_cmd(first_token, n_pipe0_cmds);
 
     if (token != NULL) {
@@ -467,13 +480,13 @@ void parse_cmd(char * cmd) {
         comma_token = strtok(token, ",");
         if (comma_token != NULL) {
             // commands upto first comma
-            size_t * n_pipe1_cmds;
+            size_t * n_pipe1_cmds = malloc(sizeof(size_t));
             CMD_OPTS_REDIRECT ** pipe1_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe1_cmds);
             
             comma_token = strtok(token, ",");
             if (comma_token != NULL) {
                 // commands upto second comma/end
-                size_t * n_pipe2_cmds;
+                size_t * n_pipe2_cmds = malloc(sizeof(size_t));
                 CMD_OPTS_REDIRECT ** pipe2_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
             
                 if (is_triple_pipe) {
@@ -481,7 +494,7 @@ void parse_cmd(char * cmd) {
                     if (comma_token != NULL) {
                         // remaining commands
 
-                        size_t * n_pipe3_cmds;
+                        size_t * n_pipe3_cmds = malloc(sizeof(size_t));
                         CMD_OPTS_REDIRECT ** pipe3_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
 
                         // triple pipe execute
@@ -499,6 +512,15 @@ void parse_cmd(char * cmd) {
                         execute_multiple_pipe_cmd(pipe1_cmds, *n_pipe1_cmds);
                         execute_multiple_pipe_cmd(pipe2_cmds, *n_pipe2_cmds);
                         execute_multiple_pipe_cmd(pipe3_cmds, *n_pipe3_cmds);
+
+                        free(pipe0_cmds);
+                        free(pipe1_cmds);
+                        free(pipe2_cmds);
+                        free(pipe3_cmds);
+                        free(n_pipe0_cmds);
+                        free(n_pipe1_cmds);
+                        free(n_pipe2_cmds);
+                        free(n_pipe3_cmds);
                     }
                     else
                         err_exit("Invalid command. Exiting...\n");
@@ -518,6 +540,13 @@ void parse_cmd(char * cmd) {
                     execute_double_pipe_cmd(pipe0_cmds[*n_pipe0_cmds-1], pipe1_cmds[0], pipe2_cmds[0]);
                     execute_multiple_pipe_cmd(pipe1_cmds, *n_pipe1_cmds);
                     execute_multiple_pipe_cmd(pipe2_cmds, *n_pipe2_cmds);
+
+                    free(pipe0_cmds);
+                    free(pipe1_cmds);
+                    free(pipe2_cmds);
+                    free(n_pipe0_cmds);
+                    free(n_pipe1_cmds);
+                    free(n_pipe2_cmds);
                 }
                 
             }
@@ -526,6 +555,11 @@ void parse_cmd(char * cmd) {
         }
         else
             err_exit("Invalid command. Exiting...\n");
+    }
+    else {
+        // no double and triple pipes
+        printf("askjdnskandaskz %s\n", pipe0_cmds[1]->program);
+        execute_multiple_pipe_cmd(pipe0_cmds, *n_pipe0_cmds);
     }
 }
 
@@ -553,7 +587,6 @@ void prompt() {
 }
 
 void sigint_handler(int sig) {
-    printf("SIGNAL RCVD\n");
     sigint_rcvd = true;
 }
 
@@ -563,7 +596,6 @@ void insert_cmd(int index, char* cmd) {
         sc_lookup_table -> head -> index = index;
         sc_lookup_table -> head -> cmd = malloc(sizeof(char) * (strlen(cmd) + 1));
         strcpy(sc_lookup_table -> head -> cmd, cmd);
-        printf("%s\n",  sc_lookup_table -> head -> cmd);
         sc_lookup_table -> head -> next = NULL;
         return;
     }
@@ -608,13 +640,9 @@ void delete_cmd(int index, char* cmd) {
 }
 
 char * search_cmd(int index) {
-    printf("SEARCHING....\n");
     SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
-    printf("%s\n", next_cmd -> cmd);
     while(next_cmd != NULL) {
-        printf("%s\n", next_cmd -> cmd);
         if(next_cmd -> index == index) {
-            printf("%s\n", next_cmd -> cmd);
             return next_cmd -> cmd;
         }
         next_cmd = next_cmd -> next;
@@ -645,10 +673,10 @@ int main() {
         bool is_bg_proc = false;
 
         if(sigint_rcvd) {
-            printf("TakE Int\n");
             int index;
             char * index_str = malloc(11 * sizeof(char));
             size_t index_str_len = 11;
+            clearerr(stdin);
             index_str_len = getline(&index_str, &index_str_len, stdin);
             if (index_str[index_str_len-1] == '\n')
                 index_str[index_str_len-1] = '\0';
@@ -658,10 +686,11 @@ int main() {
             //printf("%s\n", sc_lookup_table -> head -> cmd);
             cmd = search_cmd(index);
             if(cmd == NULL) {
-                perror("Error : No such command in lookup table with the given index. Exiting...\n");
+                err_exit("Error : No such command in lookup table with the given index. Exiting...\n");
                 sigint_rcvd = false;
                 continue;
             }
+            cmd = strdup(cmd);
             cmd_len = strlen(cmd);
             sigint_rcvd = false;
         }
@@ -669,19 +698,17 @@ int main() {
             prompt();
             size_t max_cmd_len = MAX_CMD_LEN + 1;
             cmd = malloc(sizeof(char) * max_cmd_len);
-            sleep(3);
+            clearerr(stdin);
             cmd_len = getline(&cmd, &max_cmd_len, stdin);
 
             
             if (cmd_len == -1 || cmd_len == 0 || (cmd_len >= 1 && cmd[0] == '\n')) {
-                printf("################################################\n");
                 continue;
             }
 
             cmd[cmd_len - 1] = '\0';
             cmd_len = strlen(cmd);
         }
-        printf("AA\n");
 
         if(cmd[cmd_len - 1] == '&') {
             is_bg_proc = true;
@@ -716,10 +743,6 @@ int main() {
                     sc_error = true;
                 }
                 insert_cmd(index, token);
-                if(sc_lookup_table -> head == NULL)
-                    printf("NULL\n");
-                else
-                    printf("NOTT NULL\n");
             }
             else if(strcmp(token, "-d") == 0) {
                 token = strtok(NULL, " ");
@@ -766,8 +789,8 @@ int main() {
 			printf("\tProcess Group Id: %d %d\n", getpgid(curr_pid), tcgetpgrp(STDIN_FILENO));
 			printf("\n");
 
-
-			execute(tmp_cmd);
+			//execute(tmp_cmd);
+            parse_cmd(tmp_cmd);
 		}
         else {
             close(p_sync[0]);
