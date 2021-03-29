@@ -177,7 +177,6 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
             dup2(in_redirect_fd, 0);
         }
     }
-
     if (cmd->is_append && cmd->out_redirect_file != NULL) {
         int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY | O_APPEND, 0664);
         if (out_redirect_fd < 0) {
@@ -190,6 +189,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
     }
     else if (!cmd->is_append && cmd->out_redirect_file != NULL) {
+        printf("CREATING\n");
         int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY, 0664);
         if (out_redirect_fd < 0) {
             char err_msg[100];
@@ -204,6 +204,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     // 'cmd_path' is the path of directory slashed with program
     char * cmd_path = search_cmd_path(cmd->program);
     if (cmd_path != NULL) {
+        printf("%s\n", cmd_path);
         execv(cmd_path, cmd->opts);
     }
     else {
@@ -243,11 +244,13 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     if (n_cmds < 1) {
         err_exit("Invalid command. Exiting...\n");
     }
-    
+        printf("SS%ld\n", n_cmds);
     if (n_cmds > 1) {
         int pipe_fd[n_cmds-1][2];
         
         for (size_t i = 1; i <= n_cmds; ++i) {
+            if(cmds[i] == NULL)
+                printf("SS%ld\n", n_cmds);
             if (i < n_cmds && pipe(pipe_fd[i-1]) == -1) {
                 err_exit("Error in pipe. Exiting...\n");
             }
@@ -256,7 +259,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
                 cmds[i-1]->out_fd = pipe_fd[i-1][1];
                 cmds[i]->in_fd = pipe_fd[i-1][0];
             }
-            
+            print_cmd_struct(cmds[i - 1]);
             pid_t child_cmd_pid = fork();
             if(child_cmd_pid < 0) {
                 err_exit("Error in forking. Exiting...\n");
@@ -307,6 +310,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
         // create new process for the single command
         printf("#execute single: %s\n", cmds[n_cmds-1]->program);
         execute_single_cmd(cmds[n_cmds-1]);
+        printf("SDD\n");
     }
     else {
         int status;
@@ -318,6 +322,7 @@ void execute_double_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
     CMD_OPTS_REDIRECT * out1_cmd, CMD_OPTS_REDIRECT * out2_cmd) {
     // 'in_cmd.out_fd' are set in this function
     // 'out1_cmd.in_fd' and 'out2_cmd.in_fd' are set in this function
+    printf("%s %s %s\n", in_cmd->program, out1_cmd-> program, out2_cmd-> program);
     int pipe_fd[2][2];
     if (pipe(pipe_fd[0]) == -1) {
         err_exit("Error in pipe. Exiting...\n");
@@ -343,7 +348,8 @@ void execute_double_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
         waitpid(child_cmd_pid, &status, 0);
     }
     
-    tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
+    tee(pipe_fd[0][1], pipe_fd[0][0], INT_MAX, 0);
+    tee(pipe_fd[0][1], pipe_fd[1][0], INT_MAX, 0);
 }
 
 void execute_triple_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
@@ -467,6 +473,8 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         return NULL;
     }
 
+    printf("%s\n", cmd);
+
     char * strtok_saveptr;
 
     char * tmp_cmd = strdup(cmd);
@@ -481,6 +489,7 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
     char * token = strtok_r(tmp_cmd, "|", &strtok_saveptr);
 
     while (token != NULL) {
+        printf("a%s\n", token);
         // trim leading space
         if (token[0] == ' ')
             token = token + 1;
@@ -493,8 +502,14 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         pipe_cmds[cmd_idx++] = parse_single_cmd(token);
         token = strtok_r(NULL, "|", &strtok_saveptr);
     }
-
+    printf("\n\n");
     return pipe_cmds;
+}
+
+char* trim(char* token) {
+    while(*token == '|' || *token == ' ')
+        token++;
+    return token;
 }
 
 void parse_cmd(char * cmd) {
@@ -526,19 +541,26 @@ void parse_cmd(char * cmd) {
             is_triple_pipe = true;
 
         char * comma_token;
+
+        token = trim(token);
         comma_token = strtok_r(token, ",", &strtok_saveptr);
         if (comma_token != NULL) {
+            printf("A%s\n", comma_token);
             // commands upto first comma
             size_t * n_pipe1_cmds = malloc(sizeof(size_t));
             CMD_OPTS_REDIRECT ** pipe1_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe1_cmds);
             
+            token = trim(token);
             comma_token = strtok_r(token, ",", &strtok_saveptr);
             if (comma_token != NULL) {
+                printf("B%s\n", comma_token);
                 // commands upto second comma/end
                 size_t * n_pipe2_cmds = malloc(sizeof(size_t));
                 CMD_OPTS_REDIRECT ** pipe2_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
             
                 if (is_triple_pipe) {
+                    printf("C%s\n", comma_token);
+                    token = trim(token);
                     comma_token = strtok_r(token, ",", &strtok_saveptr);
                     if (comma_token != NULL) {
                         // remaining commands
@@ -587,7 +609,9 @@ void parse_cmd(char * cmd) {
                         execute_multiple_pipe_cmd(pipe0_cmds, *n_pipe0_cmds-1);
                     }
                     execute_double_pipe_cmd(pipe0_cmds[*n_pipe0_cmds-1], pipe1_cmds[0], pipe2_cmds[0]);
+                    printf("----------------\n");
                     execute_multiple_pipe_cmd(pipe1_cmds, *n_pipe1_cmds);
+                    printf("----------------\n");
                     execute_multiple_pipe_cmd(pipe2_cmds, *n_pipe2_cmds);
 
                     free(pipe0_cmds);
