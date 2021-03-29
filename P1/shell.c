@@ -111,6 +111,19 @@ void execute_cmd(const char **cmd_toks, int n_cmd_toks) {
 }
 */
 
+void print_cmd_struct(CMD_OPTS_REDIRECT * cmd) {
+    printf("\n*************\n");
+    printf("Program : %s\n", cmd->program);
+    printf("Num Opts : %lu\n", cmd->n_opts);
+    for (size_t i = 0; i < cmd->n_opts; ++i) {
+        printf("Opt : %s\n", cmd->opts[i]);
+    }
+    printf("In/Out fd : %d , %d\n", cmd->in_fd, cmd->out_fd);
+    printf("In/Out redirect : %s , %s\n", cmd->in_redirect_file, cmd->out_redirect_file);
+    printf("IsAppend : %d\n", cmd->is_append);
+    printf("\n*************\n");
+}
+
 void free_cmd_struct(CMD_OPTS_REDIRECT ** cmd, size_t n_cmds) {
     for (size_t i = 0; i < n_cmds; ++i) {
         free(cmd[i]);
@@ -142,11 +155,13 @@ char * search_cmd_path(const char * program) {
 
 void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     // Assume the fork for this single cmd happened before this function was called
-    
+print_cmd_struct(cmd);    
     if (cmd->in_fd != 0)
-        dup2(cmd->in_fd, 0);
+        if (dup2(cmd->in_fd, 0) == -1)
+            err_exit("Error in dup2. Exiting...\n");
     if (cmd->out_fd != 0)
-        dup2(cmd->out_fd, 1);
+        if (dup2(cmd->out_fd, 1) == -1)
+            err_exit("Error in dup2. Exiting...\n");
 
     // Redirection is given higher priority.
     // `cmd1 | cmd2 < file` In this case, pipe from cmd1 to cmd2 is broken
@@ -226,7 +241,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     if (n_cmds < 1) {
         err_exit("Invalid command. Exiting...\n");
     }
-    printf("execute: %lu\n", n_cmds);
+    
     if (n_cmds > 1) {
         int pipe_fd[n_cmds-1][2];
         
@@ -236,15 +251,25 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
             }
 
             cmds[i-1]->out_fd = pipe_fd[i-1][1];
-            printf("askjn %d %d\n", cmds[i]->in_fd, pipe_fd[i-1][0]);
             cmds[i]->in_fd = pipe_fd[i-1][0];
-            printf("execute single: %s\n", cmds[i-1]->program);
             pid_t child_cmd_pid = fork();
             if(child_cmd_pid < 0) {
                 err_exit("Error in forking. Exiting...\n");
             }
             if (child_cmd_pid == 0) {
                 // create new process for the single command
+                for (size_t ii = 0; ii < n_cmds-1; ++ii) {
+                    if (i-2 == ii) {
+                        close(pipe_fd[ii][1]);
+                    }
+                    else if (i-1 == ii) {
+                        close(pipe_fd[ii][0]);
+                    }
+                    else {
+                        close(pipe_fd[ii][0]);
+                        close(pipe_fd[ii][1]);
+                    }
+                }
                 printf("execute single: %s\n", cmds[i-1]->program);
                 execute_single_cmd(cmds[i-1]);
             }
@@ -263,6 +288,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     }
     if (child_cmd_pid == 0) {
         // create new process for the single command
+        printf("execute single: %s\n", cmds[n_cmds-1]->program);
         execute_single_cmd(cmds[n_cmds-1]);
     }
     else {
@@ -346,23 +372,25 @@ CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
         return NULL;
 
     CMD_OPTS_REDIRECT * single_cmd = malloc(sizeof(CMD_OPTS_REDIRECT));
-    
+
+    char * strtok_saveptr;
+
     char * tmp_cmd = strdup(cmd);
-    char * token = strtok(tmp_cmd, " ");
+    char * token = strtok_r(tmp_cmd, " ", &strtok_saveptr);
     if (token != NULL) {
         size_t n_opts; int i;
-        for(i = 0, n_opts = 1; tmp_cmd[i] != '\0'; (tmp_cmd[i] == ' ')? n_opts++: 0, i++);
+        for(i = 0, n_opts = 1; cmd[i] != '\0'; (cmd[i] == ' ')? ++n_opts: 0, ++i);
         single_cmd->opts = malloc((n_opts + 1) * sizeof(char *));
         // +1 for the ending NULL
-        
+
         int opt_idx = 0;
         single_cmd->program = token;
         single_cmd->opts[opt_idx++] = token;
         
-        token = strtok(NULL, " ");
+        token = strtok_r(NULL, " ", &strtok_saveptr);
         while (token != NULL) {
             single_cmd->opts[opt_idx++] = token;
-            token = strtok(NULL, " ");
+            token = strtok_r(NULL, " ", &strtok_saveptr);
         }
         single_cmd->opts[opt_idx] = NULL;
 
@@ -384,8 +412,10 @@ CMD_OPTS_REDIRECT * parse_pipe_cmd(char * cmd, char ** new_cmd) {
         return NULL;
     }
 
+    char * strtok_saveptr;
+
     char * tmp_cmd = strdup(cmd);
-    char * token = strtok(tmp_cmd, "|");
+    char * token = strtok_r(tmp_cmd, "|", &strtok_saveptr);
     if (token != NULL) {
         // trim trailing space
         size_t token_len = strlen(token);
@@ -394,7 +424,7 @@ CMD_OPTS_REDIRECT * parse_pipe_cmd(char * cmd, char ** new_cmd) {
 
         CMD_OPTS_REDIRECT * in_cmd = parse_single_cmd(token);
         
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &strtok_saveptr);
         if (token != NULL) {
             // trim leading space
             if (token[0] == ' ')
@@ -420,6 +450,8 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         return NULL;
     }
 
+    char * strtok_saveptr;
+
     char * tmp_cmd = strdup(cmd);
  
     size_t _n_pipe_cmds; int i;
@@ -429,11 +461,9 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
     *n_pipe_cmds = _n_pipe_cmds;
 
     int cmd_idx = 0; size_t token_len;
-    printf("cmd: %s\n", tmp_cmd);
-    char * token = strtok(tmp_cmd, "|");
+    char * token = strtok_r(tmp_cmd, "|", &strtok_saveptr);
 
     while (token != NULL) {
-        printf("asaaaaaaa %s\n", token);
         // trim leading space
         if (token[0] == ' ')
             token = token + 1;
@@ -442,9 +472,9 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         token_len = strlen(token);
         if (token[token_len-1] == ' ')
             token[token_len-1] = '\0';
+        
         pipe_cmds[cmd_idx++] = parse_single_cmd(token);
-        printf("parse: %s\n", token);
-        token = strtok(NULL, "|");
+        token = strtok_r(NULL, "|", &strtok_saveptr);
     }
 
     return pipe_cmds;
@@ -455,6 +485,8 @@ void parse_cmd(char * cmd) {
         return;
     }
 
+    char * strtok_saveptr;
+
     size_t cmd_len = strlen(cmd);
     char * tmp_cmd = strdup(cmd);
     char * token = strstr(tmp_cmd, "||");
@@ -464,7 +496,7 @@ void parse_cmd(char * cmd) {
     if (token == NULL)
         first_token = tmp_cmd;
     else
-        memcpy(first_token, tmp_cmd, token - tmp_cmd);
+        strncpy(first_token, tmp_cmd, token - tmp_cmd);
 
     size_t * n_pipe0_cmds = malloc(sizeof(size_t));
     CMD_OPTS_REDIRECT ** pipe0_cmds = parse_multiple_pipe_cmd(first_token, n_pipe0_cmds);
@@ -477,20 +509,20 @@ void parse_cmd(char * cmd) {
             is_triple_pipe = true;
 
         char * comma_token;
-        comma_token = strtok(token, ",");
+        comma_token = strtok_r(token, ",", &strtok_saveptr);
         if (comma_token != NULL) {
             // commands upto first comma
             size_t * n_pipe1_cmds = malloc(sizeof(size_t));
             CMD_OPTS_REDIRECT ** pipe1_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe1_cmds);
             
-            comma_token = strtok(token, ",");
+            comma_token = strtok_r(token, ",", &strtok_saveptr);
             if (comma_token != NULL) {
                 // commands upto second comma/end
                 size_t * n_pipe2_cmds = malloc(sizeof(size_t));
                 CMD_OPTS_REDIRECT ** pipe2_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
             
                 if (is_triple_pipe) {
-                    comma_token = strtok(token, ",");
+                    comma_token = strtok_r(token, ",", &strtok_saveptr);
                     if (comma_token != NULL) {
                         // remaining commands
 
@@ -558,7 +590,6 @@ void parse_cmd(char * cmd) {
     }
     else {
         // no double and triple pipes
-        printf("askjdnskandaskz %s\n", pipe0_cmds[1]->program);
         execute_multiple_pipe_cmd(pipe0_cmds, *n_pipe0_cmds);
     }
 }
