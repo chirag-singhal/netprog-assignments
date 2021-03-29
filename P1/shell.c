@@ -122,6 +122,7 @@ char * search_cmd_path(const char * program) {
         if (access(tmp_cmd_path, F_OK) == 0) {
             break;
         }
+        path_token = strtok(NULL, ":");
     }
     free(path_dup);
     if (path_token != NULL) {
@@ -439,49 +440,120 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
     return pipe_cmds;
 }
 
-void parse_double_pipe_cmd(char * cmd) {
-    // 'cmd' is in the format of <multiple_cmds> || <multiple_cmds> , <multiple_cmds>
+void parse_cmd(char * cmd) {
     if (cmd == NULL) {
         return;
     }
     
+    size_t cmd_len = strlen(cmd);
     char * tmp_cmd = strdup(cmd);
-    char * token = strtok(tmp_cmd, "|,");
-    while (token != NULL) {
-        
-    }
-}
+    char * token = strstr(tmp_cmd, "||");
 
-void parse_triple_pipe_cmd(char * cmd) {
-    // cmd1 || cmd2 || cmd3 , cmd4, cmd5, cmd6
-    // cmd1 -> cmd2, cmd5, cmd6
-    // cmd2 -> cmd3, cmd4
-    // c1 || c2 | c3, c4
-    return;
+    // commands till '||'
+    char * first_token = malloc(MAX_CMD_LEN * sizeof(char));
+    memcpy(first_token, tmp_cmd, token - tmp_cmd);
+
+    size_t * n_pipe0_cmds;
+    CMD_OPTS_REDIRECT ** pipe0_cmds = parse_multiple_pipe_cmd(first_token, n_pipe0_cmds);
+
+    if (token != NULL) {
+        bool is_triple_pipe = false;
+        
+        // triple pipe: token -> token+2 inclusive
+        if (token[2] == '|')
+            is_triple_pipe = true;
+
+        char * comma_token;
+        comma_token = strtok(token, ",");
+        if (comma_token != NULL) {
+            // commands upto first comma
+            size_t * n_pipe1_cmds;
+            CMD_OPTS_REDIRECT ** pipe1_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe1_cmds);
+            
+            comma_token = strtok(token, ",");
+            if (comma_token != NULL) {
+                // commands upto second comma/end
+                size_t * n_pipe2_cmds;
+                CMD_OPTS_REDIRECT ** pipe2_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
+            
+                if (is_triple_pipe) {
+                    comma_token = strtok(token, ",");
+                    if (comma_token != NULL) {
+                        // remaining commands
+
+                        size_t * n_pipe3_cmds;
+                        CMD_OPTS_REDIRECT ** pipe3_cmds = parse_multiple_pipe_cmd(comma_token, n_pipe2_cmds);
+
+                        // triple pipe execute
+                        if (*n_pipe0_cmds > 1) {
+                            int pipe_fd[2];
+                            if (pipe(pipe_fd) == -1) {
+                                err_exit("Error in pipe. Exiting...\n");
+                            }
+                            
+                            pipe0_cmds[*n_pipe0_cmds-2]->out_fd = pipe_fd[1];
+                            pipe0_cmds[*n_pipe0_cmds-1]->in_fd = pipe_fd[0];
+                            execute_multiple_pipe_cmd(pipe0_cmds, *n_pipe0_cmds-1);
+                        }
+                        execute_triple_pipe_cmd(pipe0_cmds[*n_pipe0_cmds-1], pipe1_cmds[0], pipe2_cmds[0], pipe3_cmds[0]);
+                        execute_multiple_pipe_cmd(pipe1_cmds, *n_pipe1_cmds);
+                        execute_multiple_pipe_cmd(pipe2_cmds, *n_pipe2_cmds);
+                        execute_multiple_pipe_cmd(pipe3_cmds, *n_pipe3_cmds);
+                    }
+                    else
+                        err_exit("Invalid command. Exiting...\n");
+                }
+                else {
+                    // double pipe execute
+                    if (*n_pipe0_cmds > 1) {
+                        int pipe_fd[2];
+                        if (pipe(pipe_fd) == -1) {
+                            err_exit("Error in pipe. Exiting...\n");
+                        }
+                        
+                        pipe0_cmds[*n_pipe0_cmds-2]->out_fd = pipe_fd[1];
+                        pipe0_cmds[*n_pipe0_cmds-1]->in_fd = pipe_fd[0];
+                        execute_multiple_pipe_cmd(pipe0_cmds, *n_pipe0_cmds-1);
+                    }
+                    execute_double_pipe_cmd(pipe0_cmds[*n_pipe0_cmds-1], pipe1_cmds[0], pipe2_cmds[0]);
+                    execute_multiple_pipe_cmd(pipe1_cmds, *n_pipe1_cmds);
+                    execute_multiple_pipe_cmd(pipe2_cmds, *n_pipe2_cmds);
+                }
+                
+            }
+            else
+                err_exit("Invalid command. Exiting...\n");
+        }
+        else
+            err_exit("Invalid command. Exiting...\n");
+    }
 }
 
 void execute(char * cmd) {
     CMD_OPTS_REDIRECT * single_cmd = malloc(sizeof(CMD_OPTS_REDIRECT));
     single_cmd->program = cmd;
-    single_cmd->opts = malloc(3*sizeof(char *));
+    single_cmd->opts = malloc(2*sizeof(char *));
     single_cmd->opts[0] = cmd;
-    single_cmd -> opts[1] = malloc(sizeof(char) * 3);
-    single_cmd -> opts[1] = "3d";
-    single_cmd->opts[2] = NULL;
+    // single_cmd -> opts[1] = malloc(sizeof(char) * 3);
+    // single_cmd -> opts[1] = "3d";
+    single_cmd->opts[1] = NULL;
     single_cmd->n_opts = 1;
     single_cmd->in_fd = 0;
     single_cmd->out_fd = 1;
     single_cmd->in_redirect_file = NULL;
     single_cmd->out_redirect_file = NULL;
     single_cmd->is_append = 0;
-    execute_pipe_cmd(&single_cmd, 1);
+    execute_multiple_pipe_cmd(&single_cmd, 1);
 }
 
 void prompt() {
-    printf(">> ");
+    char cwd[200];
+    getcwd(cwd, 200);
+    printf("\n(%s) >> ", cwd);
 }
 
 void sigint_handler(int sig) {
+    printf("SIGNAL RCVD\n");
     sigint_rcvd = true;
 }
 
@@ -491,6 +563,7 @@ void insert_cmd(int index, char* cmd) {
         sc_lookup_table -> head -> index = index;
         sc_lookup_table -> head -> cmd = malloc(sizeof(char) * (strlen(cmd) + 1));
         strcpy(sc_lookup_table -> head -> cmd, cmd);
+        printf("%s\n",  sc_lookup_table -> head -> cmd);
         sc_lookup_table -> head -> next = NULL;
         return;
     }
@@ -535,9 +608,13 @@ void delete_cmd(int index, char* cmd) {
 }
 
 char * search_cmd(int index) {
+    printf("SEARCHING....\n");
     SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
+    printf("%s\n", next_cmd -> cmd);
     while(next_cmd != NULL) {
+        printf("%s\n", next_cmd -> cmd);
         if(next_cmd -> index == index) {
+            printf("%s\n", next_cmd -> cmd);
             return next_cmd -> cmd;
         }
         next_cmd = next_cmd -> next;
@@ -560,37 +637,51 @@ int main() {
     if (sigaction(SIGINT, &sigint, NULL) == -1)
         err_exit("nError in sigaction SIGUSR1!\n");
     
-    while (1) {
+    while (true) {
         
-        prompt();
 
         ssize_t cmd_len;
         char * cmd;
         bool is_bg_proc = false;
 
         if(sigint_rcvd) {
+            printf("TakE Int\n");
             int index;
-            scanf("%d", &index);
+            char * index_str = malloc(11 * sizeof(char));
+            size_t index_str_len = 11;
+            index_str_len = getline(&index_str, &index_str_len, stdin);
+            if (index_str[index_str_len-1] == '\n')
+                index_str[index_str_len-1] = '\0';
+            index = atoi(index_str);
+            free(index_str);
+            //printf("SCCCCCCCCC %d\n", index);
+            //printf("%s\n", sc_lookup_table -> head -> cmd);
             cmd = search_cmd(index);
-            cmd_len = strlen(cmd);
             if(cmd == NULL) {
-                err_exit("Error : No such command in lookup table with the given index. Exiting...\n");
+                perror("Error : No such command in lookup table with the given index. Exiting...\n");
+                sigint_rcvd = false;
+                continue;
             }
+            cmd_len = strlen(cmd);
             sigint_rcvd = false;
         }
-
         else {
+            prompt();
             size_t max_cmd_len = MAX_CMD_LEN + 1;
             cmd = malloc(sizeof(char) * max_cmd_len);
+            sleep(3);
             cmd_len = getline(&cmd, &max_cmd_len, stdin);
 
+            
             if (cmd_len == -1 || cmd_len == 0 || (cmd_len >= 1 && cmd[0] == '\n')) {
+                printf("################################################\n");
                 continue;
             }
 
             cmd[cmd_len - 1] = '\0';
             cmd_len = strlen(cmd);
         }
+        printf("AA\n");
 
         if(cmd[cmd_len - 1] == '&') {
             is_bg_proc = true;
@@ -605,15 +696,65 @@ int main() {
         
         char * tmp_cmd = strdup(cmd);
 
+        char *tmp_cmd_sc = strdup(cmd);
+        bool sc_error = false, sc_cmd = false;
+        char *token = strtok(tmp_cmd_sc, " ");
+        if (strcmp(token, "sc") == 0) {
+            sc_cmd = true;
+            token = strtok(NULL, " ");
+            if(token == NULL) {
+                sc_error = true;
+            }
+            else if(strcmp(token, "-i") == 0) {
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    sc_error = true;
+                }
+                int index = atoi(token);
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    sc_error = true;
+                }
+                insert_cmd(index, token);
+                if(sc_lookup_table -> head == NULL)
+                    printf("NULL\n");
+                else
+                    printf("NOTT NULL\n");
+            }
+            else if(strcmp(token, "-d") == 0) {
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    sc_error = true;
+                }
+                int index = atoi(token);
+                token = strtok(NULL, " ");
+                if(token == NULL) {
+                    sc_error = true;
+                }
+                delete_cmd(index, token);
+            }
+            else {
+                 sc_error = true;
+            }
+            if(sc_error) {
+                err_exit("Error Correct format for shortcut command is sc -i <index> <cmd> or sc -d <index> <cmd>. Exiting...\n");
+            }
+        } 
+        free(tmp_cmd_sc);
+
+        if(sc_cmd)
+            continue;
+
         int p_sync[2];
 		pipe(p_sync);
 
 		pid_t child_exec = fork();
 
 		if(child_exec < 0) {
-            
+            err_exit("Error in creating a child process. Exiting...\n");
 		}
 		else if (child_exec == 0) {
+            // signal(SIGINT, SIG_DFL);
 			close(p_sync[1]);
 			char buff_sync[3];
 			int n = read(p_sync[0], buff_sync, 2);
@@ -625,46 +766,7 @@ int main() {
 			printf("\tProcess Group Id: %d %d\n", getpgid(curr_pid), tcgetpgrp(STDIN_FILENO));
 			printf("\n");
 
-            char *tmp_cmd_sc = strdup(cmd);
-            bool sc_error = false;
-            char *token = strtok(tmp_cmd_sc, " ");
-            if (strcmp(token, "sc") == 0) {
-                token = strtok(NULL, " ");
-                if(token == NULL) {
-                    sc_error = true;
-                }
-                if(strcmp(token, "-i") == 0) {
-                    token = strtok(NULL, " ");
-                    if(token == NULL) {
-                        sc_error = true;
-                    }
-                    int index = atoi(token);
-                    token = strtok(NULL, " ");
-                    if(token == NULL) {
-                        sc_error = true;
-                    }
-                    insert_cmd(index, token);
-                }
-                else if(strcmp(token, "-d") == 0) {
-                    token = strtok(NULL, " ");
-                    if(token == NULL) {
-                        sc_error = true;
-                    }
-                    int index = atoi(token);
-                    token = strtok(NULL, " ");
-                    if(token == NULL) {
-                        sc_error = true;
-                    }
-                    delete_cmd(index, token);
-                }
-                else {
-                     sc_error = true;
-                }
-                if(sc_error) {
-                    err_exit("Error Correct format for shortcut command is sc -i <index> <cmd> or sc -d <index> <cmd>. Exiting...\n");
-                }
-            } 
-            free(tmp_cmd_sc);
+
 			execute(tmp_cmd);
 		}
         else {
@@ -681,9 +783,8 @@ int main() {
 			write(p_sync[1], "##", 2);
 
             int status;
-
             if(!is_bg_proc)
-                waitpid(child_exec, &status, WNOHANG);
+                waitpid(child_exec, &status, WUNTRACED);
             tcsetpgrp(0, getpid());
 			signal(SIGTTOU, SIG_DFL);
         }
