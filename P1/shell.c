@@ -45,7 +45,7 @@ typedef struct _LOOKUP_TABLE {
 ////////////////////////////////////////
 
 void err_exit(const char *err_msg) {
-    printf("%s\n", err_msg);
+    perror(err_msg);
     exit(EXIT_FAILURE);
 }
 
@@ -155,10 +155,10 @@ char * search_cmd_path(const char * program) {
 
 void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     // Assume the fork for this single cmd happened before this function was called
-print_cmd_struct(cmd);    
+    print_cmd_struct(cmd);
     if (cmd->in_fd != 0)
-        if (dup2(cmd->in_fd, 0) == -1)
-            err_exit("Error in dup2. Exiting...\n");
+        if (dup2(cmd->in_fd, 0) == -1) 
+            err_exit("#Error in dup2. Exiting...\n");
     if (cmd->out_fd != 0)
         if (dup2(cmd->out_fd, 1) == -1)
             err_exit("Error in dup2. Exiting...\n");
@@ -228,6 +228,8 @@ void execute_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd, CMD_OPTS_REDIRECT * out_cmd) {
         execute_single_cmd(in_cmd);
     }
     else {
+        close(pipe_fd[0]);
+        close(pipe_fd[1]);
         int status;
         waitpid(child_cmd_pid, &status, 0);
     }
@@ -245,41 +247,56 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     if (n_cmds > 1) {
         int pipe_fd[n_cmds-1][2];
         
-        for (size_t i = 1; i < n_cmds; ++i) {
-            if (pipe(pipe_fd[i-1]) == -1) {
+        for (size_t i = 1; i <= n_cmds; ++i) {
+            if (i < n_cmds && pipe(pipe_fd[i-1]) == -1) {
                 err_exit("Error in pipe. Exiting...\n");
             }
 
-            cmds[i-1]->out_fd = pipe_fd[i-1][1];
-            cmds[i]->in_fd = pipe_fd[i-1][0];
+            if(i < n_cmds) {
+                cmds[i-1]->out_fd = pipe_fd[i-1][1];
+                cmds[i]->in_fd = pipe_fd[i-1][0];
+            }
+            
             pid_t child_cmd_pid = fork();
             if(child_cmd_pid < 0) {
                 err_exit("Error in forking. Exiting...\n");
             }
             if (child_cmd_pid == 0) {
                 // create new process for the single command
-                for (size_t ii = 0; ii < n_cmds-1; ++ii) {
-                    if (i-2 == ii) {
-                        close(pipe_fd[ii][1]);
-                    }
-                    else if (i-1 == ii) {
-                        close(pipe_fd[ii][0]);
-                    }
-                    else {
-                        close(pipe_fd[ii][0]);
-                        close(pipe_fd[ii][1]);
-                    }
-                }
+                // for (size_t ii = 0; ii < n_cmds-1; ++ii) {
+                //     if (i-2 == ii) {
+                //         printf("%d\n", pipe_fd[ii][1]);
+                //         close(pipe_fd[ii][1]);
+                //     }
+                //     else if (i-1 == ii) {
+                //         printf("%d\n", pipe_fd[ii][0]);
+                //         close(pipe_fd[ii][0]);
+                //     }
+                //     else {
+                //         close(pipe_fd[ii][0]);
+                //         close(pipe_fd[ii][1]);
+                //     }
+                // }
                 printf("execute single: %s\n", cmds[i-1]->program);
                 execute_single_cmd(cmds[i-1]);
+                break;
             }
             else {
                 int status;
-                close(pipe_fd[i-1][0]);
-                close(pipe_fd[i-1][1]);
+                if(i == 1) {
+                    close(pipe_fd[i-1][1]);
+                }
+                else if(i < n_cmds) {
+                    close(pipe_fd[i-2][0]);
+                    close(pipe_fd[i-1][1]);
+                }
+                else {
+                    close(pipe_fd[i-2][1]);
+                }
                 waitpid(child_cmd_pid, &status, 0);
             }
         }
+        return;
     }
 
     pid_t child_cmd_pid = fork();
@@ -288,7 +305,7 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     }
     if (child_cmd_pid == 0) {
         // create new process for the single command
-        printf("execute single: %s\n", cmds[n_cmds-1]->program);
+        printf("#execute single: %s\n", cmds[n_cmds-1]->program);
         execute_single_cmd(cmds[n_cmds-1]);
     }
     else {
