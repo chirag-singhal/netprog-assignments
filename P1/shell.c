@@ -178,7 +178,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
     }
     if (cmd->is_append && cmd->out_redirect_file != NULL) {
-        int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY | O_APPEND, 0664);
+        int out_redirect_fd = open(cmd -> out_redirect_file, O_CREAT | O_WRONLY | O_APPEND, 0664);
         if (out_redirect_fd < 0) {
             char err_msg[100];
             sprintf(err_msg, "Cannot open file '%s'. Exiting...\n", cmd->out_redirect_file);
@@ -190,7 +190,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     }
     else if (!cmd->is_append && cmd->out_redirect_file != NULL) {
         printf("CREATING\n");
-        int out_redirect_fd = open(cmd -> in_redirect_file, O_CREAT | O_WRONLY, 0664);
+        int out_redirect_fd = open(cmd -> out_redirect_file, O_CREAT | O_WRONLY, 0664);
         if (out_redirect_fd < 0) {
             char err_msg[100];
             sprintf(err_msg, "Cannot open file '%s'. Exiting...\n", cmd->out_redirect_file);
@@ -423,6 +423,37 @@ CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
         single_cmd->in_redirect_file = NULL;
         single_cmd->out_redirect_file = NULL;
         single_cmd->is_append = 0;
+
+        // Find and handle redirection
+        for (size_t ii = 0; ii < single_cmd->n_opts; ++ii) {
+            if (strcmp(single_cmd->opts[ii], "<") == 0) {
+                single_cmd->in_redirect_file = strdup(single_cmd->opts[ii+1]);
+                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
+                }
+                single_cmd->n_opts -= 2;
+                --ii;
+            }
+            else if (strcmp(single_cmd->opts[ii], ">>") == 0) {
+                single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
+                single_cmd->is_append = 1;
+                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
+                }
+                single_cmd->n_opts -= 2;
+                --ii;
+            }
+            else if (strcmp(single_cmd->opts[ii], ">") == 0) {
+                single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
+                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
+                }
+                single_cmd->n_opts -= 2;
+                --ii;
+            }
+        }
+        single_cmd->opts[single_cmd->n_opts] = NULL;
+
         return single_cmd;
     }
     return NULL;
