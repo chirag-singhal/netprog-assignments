@@ -1,5 +1,1 @@
-total 60
--rw-rw-rw- 1 codespace root        258 Mar 30 07:42 execv_temp.c
--rw-rw-rw- 1 codespace root      27520 Mar 30 09:45 shell.c
--rwxrwxrwx 1 codespace codespace 27648 Mar 30 09:45 shell.o
--rw-rw-rw- 1 codespace root          0 Mar 30 09:47 test.txt
+      4       4      38
