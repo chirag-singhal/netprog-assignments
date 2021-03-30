@@ -178,12 +178,16 @@ int main() {
     user_name[alias_len - 1] = '\0';
 
     while(true) {
+
+        bool is_error = false;
         
         prompt();
 
         char * cmd = malloc(sizeof(char) * (MAX_CMD_LEN + 1));
         size_t max_cmd_len = MAX_CMD_LEN;
         size_t cmd_len = getline(&cmd, &max_cmd_len, stdin);
+        if(cmd_len == 0 || cmd[0] == '\n')
+            continue;
         pthread_mutex_lock(&lock);
         cmd[cmd_len - 1] = '\0';
         cmd_len = strlen(cmd);
@@ -195,11 +199,15 @@ int main() {
         if(strcmp(token, "create") == 0) {
             //create group
             token = strtok_r(NULL, " ", &saved_ptr);
+            if(token == NULL) 
+                is_error = true;
             create_group(token);
         }
         else if(strcmp(token, "join") == 0) {
             //join group
             token = strtok_r(NULL, " ", &saved_ptr);
+            if(token == NULL) 
+                is_error = true;
             join_group(token);
         }
         else if(strcmp(token, "list") == 0) {
@@ -209,16 +217,26 @@ int main() {
         else if(strcmp(token, "send") == 0) {
             //send -p (private) -g (group)
             token = strtok_r(NULL, " ", &saved_ptr);
+            if(token == NULL) 
+                is_error = true;
             if(strcmp(token, "-p") == 0) {
                 //private mssg send
                 token = strtok_r(NULL, " ", &saved_ptr);
+                if(token == NULL) 
+                    is_error = true;
                 char *mssg = token + strlen(token) + 1;
+                if(*mssg == '\0') 
+                    is_error = true;
                 send_priv_mssg(token, mssg);
             }
             else if(strcmp(token, "-g") == 0) {
                 //group mssg send
                 token = strtok_r(NULL, " ", &saved_ptr);
+                if(token == NULL) 
+                    is_error = true;
                 char *mssg = token + strlen(token) + 1;
+                if(*mssg == '\0') 
+                    is_error = true;
                 send_group_mssg(token, mssg);
             }
             else {
@@ -229,15 +247,25 @@ int main() {
         else if(strcmp(token, "auto") == 0) {
             //auto delete
             token = strtok_r(NULL, " ", &saved_ptr);
+            if(token == NULL) 
+                is_error = true;
             if(strcmp(token, "delete") == 0) {
                 //private mssg send
                 char* group_name = strtok_r(NULL, " ", &saved_ptr);
+                if(group_name == NULL) 
+                    is_error = true;
                 token = strtok_r(NULL, " ", &saved_ptr);
+                if(token == NULL) 
+                    is_error = true;
                 int time_sec = atoi(token);
                 set_auto_delete(group_name, time_sec);
             }
         }
         else {
+            //invalid command
+            err_exit("Error: invalid command. Exiting...");
+        }
+        if(is_error) {
             //invalid command
             err_exit("Error: invalid command. Exiting...");
         }
