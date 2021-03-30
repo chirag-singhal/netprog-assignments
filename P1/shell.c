@@ -637,6 +637,12 @@ void delete_cmd(int index, char* cmd) {
     }
     SHORT_CUT_COMMAND* next_cmd = sc_lookup_table -> head;
     SHORT_CUT_COMMAND* prev_cmd = NULL;
+
+    if(next_cmd -> index == index) {
+        sc_lookup_table -> head = sc_lookup_table -> head -> next;
+        return;
+    }
+
     while(next_cmd != NULL) {
         if(next_cmd -> index == index) {
            prev_cmd -> next = next_cmd -> next;
@@ -696,7 +702,7 @@ int main() {
             free(index_str);
             cmd = search_cmd(index);
             if(cmd == NULL) {
-                err_exit("Error : No such command in lookup table with the given index. Exiting...\n");
+                printf("Error : No such command in lookup table with the given index. Exiting...\n");
                 sigint_rcvd = false;
                 continue;
             }
@@ -728,6 +734,9 @@ int main() {
                 cmd[cmd_len - 1] = '\0';
         }
 
+        if(strcmp(cmd, "exit") == 0) 
+            _exit(EXIT_SUCCESS);
+
         cmd_len = strlen(cmd);
         // Spawn a new process group for the `cmd`
 
@@ -748,8 +757,9 @@ int main() {
                     sc_error = true;
                 }
                 int index = atoi(token);
-                token = strtok(NULL, " ");
-                if(token == NULL) {
+                token = token + strlen(token) + 1;
+                token = trim(token);
+                if(*token == '\0') {
                     sc_error = true;
                 }
                 insert_cmd(index, token);
@@ -760,8 +770,9 @@ int main() {
                     sc_error = true;
                 }
                 int index = atoi(token);
-                token = strtok(NULL, " ");
-                if(token == NULL) {
+                token = token + strlen(token) + 1;
+                token = trim(token);
+                if(*token == '\0') {
                     sc_error = true;
                 }
                 delete_cmd(index, token);
