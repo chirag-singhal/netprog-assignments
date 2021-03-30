@@ -50,6 +50,13 @@ void err_exit(const char *err_msg) {
 }
 
 
+char* trim(char* token) {
+    while(*token == '|' || *token == ' ') {
+        token++;
+    }
+    return token;
+}
+
 const char * PATH;
 bool sigint_rcvd = false;
 LOOKUP_TABLE* sc_lookup_table;
@@ -133,8 +140,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
     }
     else if (!cmd->is_append && cmd->out_redirect_file != NULL) {
-        printf("CREATING\n");
-        int out_redirect_fd = open(cmd -> out_redirect_file, O_CREAT | O_WRONLY, 0664);
+        int out_redirect_fd = open(cmd -> out_redirect_file, O_CREAT | O_WRONLY | O_TRUNC, 0664);
         if (out_redirect_fd < 0) {
             char err_msg[100];
             sprintf(err_msg, "Cannot open file '%s'. Exiting...\n", cmd->out_redirect_file);
@@ -334,61 +340,89 @@ CMD_OPTS_REDIRECT * parse_single_cmd(const char * cmd) {
     char * strtok_saveptr;
 
     char * tmp_cmd = strdup(cmd);
-    char * token = strtok_r(tmp_cmd, " ", &strtok_saveptr);
+    char * tmp_cmd2 = strdup(cmd);
+    char * token = strtok_r(tmp_cmd, " <>", &strtok_saveptr);
     if (token != NULL) {
         size_t n_opts; int i;
-        for(i = 0, n_opts = 1; cmd[i] != '\0'; (cmd[i] == ' ')? ++n_opts: 0, ++i);
+
+        char * strtok_redirect_in;
+        char* redirect_in_token2 = NULL;
+        char* redirect_in_token = strstr(tmp_cmd2, "<");
+        if(redirect_in_token != NULL) {
+            redirect_in_token++;
+            redirect_in_token = trim(redirect_in_token);
+            redirect_in_token2 = strtok_r(redirect_in_token, " |>", &strtok_redirect_in);
+        }
+        
+
+        tmp_cmd2 = strdup(cmd);
+        char * strtok_redirect_out;
+        char* redirect_out_token2 = NULL;
+        char* redirect_out_token = strstr(tmp_cmd2, ">");
+        if(redirect_out_token != NULL) {
+            redirect_out_token++;
+            if(*redirect_out_token == '>') {
+                single_cmd->is_append = 1;
+                redirect_out_token++;
+            }
+            else {
+                single_cmd ->is_append = 0;
+            }
+            redirect_out_token = trim(redirect_out_token);
+            redirect_out_token2 = strtok_r(redirect_out_token, " |<", &strtok_redirect_out);
+        }
+        
+        tmp_cmd2 = strdup(cmd);
+        char* rem_token = strtok_r(tmp_cmd2, "<>", &strtok_saveptr);
+
+        for(i = 0, n_opts = 1; rem_token[i] != '\0'; (rem_token[i] == ' ')? ++n_opts: 0, ++i);
         single_cmd->opts = malloc((n_opts + 1) * sizeof(char *));
         // +1 for the ending NULL
 
         int opt_idx = 0;
-        single_cmd->program = token;
-        single_cmd->opts[opt_idx++] = token;
 
-        token = strtok_r(NULL, " ", &strtok_saveptr);
-        while (token != NULL) {
-            single_cmd->opts[opt_idx++] = token;
-            token = strtok_r(NULL, " ", &strtok_saveptr);
+        char* rem_token2 = strtok_r(rem_token, " ", &strtok_saveptr);
+        while (rem_token2 != NULL) {
+            single_cmd->opts[opt_idx++] = rem_token2;
+            rem_token2 = strtok_r(NULL, " ", &strtok_saveptr);
         }
         single_cmd->opts[opt_idx] = NULL;
 
+        single_cmd->program = token;
         single_cmd->n_opts = n_opts;
         single_cmd->in_fd = 0;
         single_cmd->out_fd = 1;
-        single_cmd->in_redirect_file = NULL;
-        single_cmd->out_redirect_file = NULL;
-        single_cmd->is_append = 0;
-
+        single_cmd->in_redirect_file = redirect_in_token2;
+        single_cmd->out_redirect_file = redirect_out_token2;
         // Find and handle redirection
-        for (size_t ii = 0; ii < single_cmd->n_opts; ++ii) {
-            if (strcmp(single_cmd->opts[ii], "<") == 0) {
-                single_cmd->in_redirect_file = strdup(single_cmd->opts[ii+1]);
-                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
-                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
-                }
-                single_cmd->n_opts -= 2;
-                --ii;
-            }
-            else if (strcmp(single_cmd->opts[ii], ">>") == 0) {
-                single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
-                single_cmd->is_append = 1;
-                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
-                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
-                }
-                single_cmd->n_opts -= 2;
-                --ii;
-            }
-            else if (strcmp(single_cmd->opts[ii], ">") == 0) {
-                single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
-                for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
-                    single_cmd->opts[iii-2] = single_cmd->opts[iii];
-                }
-                single_cmd->n_opts -= 2;
-                --ii;
-            }
-        }
+        // for (size_t ii = 0; ii < single_cmd->n_opts; ++ii) {
+        //     if (strcmp(single_cmd->opts[ii], "<") == 0) {
+        //         single_cmd->in_redirect_file = strdup(single_cmd->opts[ii+1]);
+        //         for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+        //             single_cmd->opts[iii-2] = single_cmd->opts[iii];
+        //         }
+        //         single_cmd->n_opts -= 2;
+        //         --ii;
+        //     }
+        //     else if (strcmp(single_cmd->opts[ii], ">>") == 0) {
+        //         single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
+        //         single_cmd->is_append = 1;
+        //         for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+        //             single_cmd->opts[iii-2] = single_cmd->opts[iii];
+        //         }
+        //         single_cmd->n_opts -= 2;
+        //         --ii;
+        //     }
+        //     else if (strcmp(single_cmd->opts[ii], ">") == 0) {
+        //         single_cmd->out_redirect_file = strdup(single_cmd->opts[ii+1]);
+        //         for (size_t iii = ii+2; iii < single_cmd->n_opts; ++iii) {
+        //             single_cmd->opts[iii-2] = single_cmd->opts[iii];
+        //         }
+        //         single_cmd->n_opts -= 2;
+        //         --ii;
+        //     }
+        // }
         single_cmd->opts[single_cmd->n_opts] = NULL;
-
         return single_cmd;
     }
     return NULL;
@@ -466,12 +500,6 @@ CMD_OPTS_REDIRECT ** parse_multiple_pipe_cmd(char * cmd, size_t * n_pipe_cmds) {
         token = strtok_r(NULL, "|", &strtok_saveptr);
     }
     return pipe_cmds;
-}
-
-char* trim(char* token) {
-    while(*token == '|' || *token == ' ')
-        token++;
-    return token;
 }
 
 void parse_cmd(char * cmd) {
@@ -734,7 +762,7 @@ int main() {
                 cmd[cmd_len - 1] = '\0';
         }
 
-        if(strcmp(cmd, "exit") == 0) 
+        if(strcmp(cmd, "please exit") == 0) 
             _exit(EXIT_SUCCESS);
 
         cmd_len = strlen(cmd);
