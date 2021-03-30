@@ -14,7 +14,7 @@
 #define MAX_GROUP_SIZE 32
 #define MAX_NUM_GROUPS 64
 #define MAX_OLD_MSG 128
-#define MAX_MSG_SIZE 4096
+#define MAX_MSG_SIZE 2048
 
 typedef enum _MSG_TYPE {
     PRIVATE_MSG,
@@ -32,7 +32,7 @@ typedef struct _MSG {
     char body[MAX_MSG_SIZE];
     char group[MAX_NAME_LEN];
     time_t time;
-    int delete_time;
+    time_t delete_time;
 } MSG;
 
 int msg_id;
@@ -76,10 +76,10 @@ void* rcv_mssg() {
             continue;
         }
         if(msg -> type == GROUP_MSG) {
-            printf("[group][%s] %s\n", msg -> group, msg -> body);
+            printf("\n[group][%s][%s] %s\n", msg -> group, msg -> sender, msg -> body);
         }
         else if(msg -> type == PRIVATE_MSG) {
-            printf("[pvt][%s] %s\n", msg -> sender, msg -> body);
+            printf("\n[pvt][%s] %s\n", msg -> sender, msg -> body);
         }
         else if(msg -> type == LIST_GROUP_MSG) {
             printf("***************\n");
@@ -88,6 +88,8 @@ void* rcv_mssg() {
             printf("***************\n");
             is_rcvd_mssg = 1;
         }
+        prompt();
+
         pthread_mutex_unlock(&lock);
     }
     msgctl(msg_id_client, IPC_RMID, 0);
@@ -155,8 +157,8 @@ void set_auto_delete(char* group_name, int time_sec) {
 
 int main() {
 
-    key_t key = ftok("NETPROG", 'z');
-    msg_id = msgget(key, 0666 | IPC_CREAT);
+    key_t key = ftok("server", 'z');
+    msg_id = msgget(1234, 0666 | IPC_CREAT);
 
     if(msg_id < 0) {
         err_exit("Error while creating message queue. Exiting...");
@@ -211,13 +213,13 @@ int main() {
                 //private mssg send
                 token = strtok_r(NULL, " ", &saved_ptr);
                 char *mssg = token + strlen(token) + 1;
-                send_group_mssg(token, mssg);
+                send_priv_mssg(token, mssg);
             }
             else if(strcmp(token, "-g") == 0) {
                 //group mssg send
                 token = strtok_r(NULL, " ", &saved_ptr);
                 char *mssg = token + strlen(token) + 1;
-                send_priv_mssg(token, mssg);
+                send_group_mssg(token, mssg);
             }
             else {
                 //invalid command

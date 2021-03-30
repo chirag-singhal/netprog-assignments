@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/msg.h>
+#include <sys/wait.h>
 
 #define MAX_NAME_LEN 30
 #define MAX_GROUP_SIZE 32
@@ -77,7 +78,11 @@ int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
 }
 
 int get_queue_id(const char * username) {
-    key_t id = ftok(username, 'z');
+    key_t id;
+    if (strcmp(username, "server") == 0)
+        id = 1234;
+    else
+        id = ftok(username, 'z');
     return msgget(id, IPC_CREAT|0666);
 }
 
@@ -114,7 +119,7 @@ int join_group(char * groupname, char * username) {
                 if (grp->join_time[grp->join_time[grp->n_members-1]] <
                     (grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)].time +
                     grp->delete_time) {
-                        if (msgsnd(id, (grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)], sizeof(MSG), 0) < 0)
+                        if (msgsnd(id, &(grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)], sizeof(MSG), 0) < 0)
                             perror("Error in msgsnd...\n");
                     }
             }
@@ -157,8 +162,8 @@ int create_group(char * groupname, char * creator_name) {
     return -1;
 }
 
-void list_group() {
-    int id = get_queue_id("server");
+void list_group(char * username) {
+    int id = get_queue_id(username);
     MSG msg = {0};
     
     strcpy(msg.body, "");
@@ -174,7 +179,7 @@ void list_group() {
 }
 
 void send_private_msg(MSG * msg) {
-    int id = get_queue_id(msg->sender);
+    int id = get_queue_id(msg->receiver);
     if (msgsnd(id, msg, sizeof(MSG), 0) < 0)
         perror("Error in msgsnd...\n");
 }
@@ -182,24 +187,42 @@ void send_private_msg(MSG * msg) {
 int send_group_msg(MSG * msg) {
     GROUP * grp = NULL;
     for (size_t grp_idx = 0; grp_idx < N_GROUPS; ++grp_idx) {
-        if (strcmp(ALL_GROUPS[grp_idx].name, msg->sender) == 0) {
+        if (strcmp(ALL_GROUPS[grp_idx].name, msg->group) == 0) {
             grp = &ALL_GROUPS[grp_idx];
             break;
         }
     }
     if (grp == NULL) {
-        printf("Group '%s' not found...\n", msg->sender);
+        printf("Group '%s' not found...\n", msg->group);
         return -1;
     }
 
     for (size_t ii = 0; ii < grp->n_members; ++ii) {
-        int id = get_queue_id(msg->sender);
+        int id = get_queue_id(grp->members[ii]);
         if (msgsnd(id, msg, sizeof(MSG), 0) < 0)
             perror("Error in msgsnd...\n");
     }
 
     msg->time = time(NULL);
-    add_old_msg(grp->old_msg, msg);
+    add_old_msg(&(grp->old_msg), msg);
+    return 0;
+}
+
+int set_delete_time(MSG * msg) {
+    GROUP * grp = NULL;
+    for (size_t grp_idx = 0; grp_idx < N_GROUPS; ++grp_idx) {
+        if (strcmp(ALL_GROUPS[grp_idx].name, msg->group) == 0) {
+            grp = &ALL_GROUPS[grp_idx];
+            break;
+        }
+    }
+    if (grp == NULL) {
+        printf("Group '%s' not found...\n", msg->group);
+        return -1;
+    }
+
+    grp->delete_time = msg->delete_time;
+
     return 0;
 }
 
@@ -215,7 +238,41 @@ int main() {
             perror("Error in msgrcv...\n");
 
         if (fork() == 0) {
-            
+printf("body %s\n", msg.body);
+            switch (msg.type) {
+                case PRIVATE_MSG: {
+                    send_private_msg(&msg);
+                    break;
+                }
+                
+                case GROUP_MSG: {
+                    send_group_msg(&msg);
+                    break;
+                }
+
+                case LIST_GROUP_MSG: {
+                    list_group(msg.sender);
+                    break;
+                }
+
+                case CREATE_GROUP_MSG: {
+                    create_group(msg.group, msg.sender);
+                    break;
+                }
+
+                case JOIN_GROUP_MSG: {
+                    join_group(msg.group, msg.sender);
+                    break;
+                }
+
+                case AUTO_DELETE_MSG: {
+                    set_delete_time(&msg);
+                    break;
+                }
+            }
+        }
+        else {
+            wait(0);
         }
     }
 
