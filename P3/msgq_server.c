@@ -79,7 +79,7 @@ int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
 
 unsigned long hash(unsigned char *str)
 {
-    unsigned long hash = 4321;
+    unsigned long hash = 5381;
     int c;
 
     while (c = *str++)
@@ -94,8 +94,7 @@ int get_queue_id(const char * username) {
     //     id = 1234;
     // else
     //     id = ftok(username, 'z');
-    id = hash(username);
-printf("QUEUE ID : %s %d\n", username, id);
+    id = hash(strdup(username));
     return msgget(id, IPC_CREAT|0666);
 }
 
@@ -251,7 +250,6 @@ int main() {
             perror("Error in msgrcv...\n");
 
         if (fork() == 0) {
-printf("body %s\n", msg.body);
             switch (msg.type) {
                 case PRIVATE_MSG: {
                     send_private_msg(&msg);

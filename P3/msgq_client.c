@@ -72,9 +72,9 @@ void* rcv_mssg() {
     MSG* msg = malloc(sizeof(MSG));
 
     // key_t key_client = ftok(user_name, 'z');
-    key_t key_client = hash(user_name);
+    key_t key_client = hash(strdup(user_name));
     int msg_id_client = msgget(key_client, 0644 | IPC_CREAT);
-printf("KEY CLIENT : %d\n", key_client);
+
     if(msg_id < 0) {
         err_exit("Error while creating message queue. Exiting...");
     }
@@ -170,19 +170,13 @@ void set_auto_delete(char* group_name, int time_sec) {
 
 int main() {
 
-    key_t key = ftok("server", 'z');
-    msg_id = msgget(1234, 0666 | IPC_CREAT);
+    // key_t key = ftok("server", 'z');
+    key_t key = hash("server");
+    msg_id = msgget(key, 0666 | IPC_CREAT);
 
     if(msg_id < 0) {
         err_exit("Error while creating message queue. Exiting...");
     }
-
-    if (pthread_mutex_init(&lock, NULL) != 0) {
-        err_exit("\n Error Mutex init. Exiting...\n");
-    }
-
-    pthread_t thread_id;
-    pthread_create(&thread_id, NULL, rcv_mssg, NULL);
 
     user_name = malloc(sizeof(char) * MAX_NAME_LEN);
     printf("Enter alias name : ");
@@ -190,6 +184,13 @@ int main() {
     size_t alias_len = getline(&user_name, &max_name_len, stdin);
     user_name[alias_len - 1] = '\0';
 
+    if (pthread_mutex_init(&lock, NULL) != 0) {
+        err_exit("\n Error Mutex init. Exiting...\n");
+    }
+    
+    pthread_t thread_id;
+    pthread_create(&thread_id, NULL, rcv_mssg, NULL);
+    
     while(true) {
 
         bool is_error = false;
