@@ -83,6 +83,7 @@ int get_queue_id(const char * username) {
         id = 1234;
     else
         id = ftok(username, 'z');
+print("QUEUE ID : %d\n", id);
     return msgget(id, IPC_CREAT|0666);
 }
 

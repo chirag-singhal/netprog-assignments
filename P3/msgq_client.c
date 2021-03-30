@@ -43,6 +43,7 @@ int is_rcvd_mssg = 0;
 
 void prompt() {
     printf("[%s] ", user_name);
+    fflush(stdout);
 }
 
 void err_exit(const char *err_msg) {
@@ -61,7 +62,7 @@ void* rcv_mssg() {
 
     key_t key_client = ftok(user_name, 'z');
     int msg_id_client = msgget(key_client, 0644 | IPC_CREAT);
-
+printf("KEY CLIENT : %d\n", key_client);
     if(msg_id < 0) {
         err_exit("Error while creating message queue. Exiting...");
     }
