@@ -99,7 +99,7 @@ char * search_cmd_path(const char * program) {
 
 void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     // Assume the fork for this single cmd happened before this function was called
-
+    // print_cmd_struct(cmd);
     if (cmd->in_fd != 0)
         if (dup2(cmd->in_fd, 0) == -1)
             err_exit("#Error in dup2. Exiting...\n");
@@ -193,7 +193,6 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
         int pipe_fd[n_cmds-1][2];
 
         for (size_t i = 1; i <= n_cmds; ++i) {
-            if(cmds[i] == NULL)
             if (i < n_cmds && pipe(pipe_fd[i-1]) == -1) {
                 err_exit("Error in pipe. Exiting...\n");
             }
