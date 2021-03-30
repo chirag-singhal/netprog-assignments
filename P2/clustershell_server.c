@@ -10,8 +10,8 @@
 #define MAX_NUM_CLI 64
 #define MAX_CMD_LEN 1024
 #define MAX_BUF_SIZE 4096
-#define CLIENT_PORT 5000
-#define SERVER_PORT 5001
+#define CLIENT_PORT 5100
+#define SERVER_PORT 5200
 #define CONFIG_FILE "clustershell.cfg"
 
 
@@ -26,8 +26,19 @@ typedef struct _CMD_STRUCT {
 } CMD_STRUCT;
 
 
-void err_exit(const char * err_msg) {
+void print_cmd_struct(CMD_STRUCT * cmd) {
+    printf("*************\n");
+    printf("Node : %d\n", cmd->node);
+    printf("Cmd : %s\n", cmd->cmd);
+    printf("*************\n");
+}
+
+void err_exit(const char * err_msg, int sock_fd) {
     perror(err_msg);
+    if (sock_fd > 0) {
+        close(sock_fd);
+        printf("Closed socket %d...\n", sock_fd);
+    }
     exit(EXIT_FAILURE);
 }
 
@@ -35,7 +46,7 @@ CONFIG_ENTRY ** read_config(const char * filename) {
     CONFIG_ENTRY ** config = malloc((MAX_NUM_CLI + 1) * sizeof(CONFIG_ENTRY *));
     FILE * config_fp = fopen(filename, "r");
     if (config_fp == NULL)
-        err_exit("Error opening config. Exiting...\n");
+        err_exit("Error opening config. Exiting...\n", -1);
 
     char name[12], ip[20];
     size_t i;
@@ -67,21 +78,21 @@ int server_init(int port) {
 
     int serv_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (serv_sock < 0)
-        err_exit("Error in socket. Exiting...\n");
+        err_exit("Error in socket. Exiting...\n", -1);
 
     int sockopt_optval = 1;
     if (setsockopt(serv_sock, SOL_SOCKET, SO_REUSEADDR, &sockopt_optval, sizeof(sockopt_optval)) < 0)
-        err_exit("Error in setsockopt. Exiting...\n");
+        err_exit("Error in setsockopt. Exiting...\n", serv_sock);
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     serv_addr.sin_port = htons(port);
 
     if (bind(serv_sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-        err_exit("Error in bind. Exiting...\n");
+        err_exit("Error in bind. Exiting...\n", serv_sock);
 
     if (listen(serv_sock, 5) < 0)
-        err_exit("Error in listen. Exiting...\n");
+        err_exit("Error in listen. Exiting...\n", serv_sock);
 
     return serv_sock;
 }
@@ -99,7 +110,7 @@ int client_init(char * ip, int port) {
     int client_sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (connect(client_sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-        err_exit("Error in connect. Exiting...\n");
+        err_exit("Error in connect. Exiting...\n", client_sock);
 
     return client_sock;
 }
@@ -109,60 +120,72 @@ CMD_STRUCT * parse_single_cmd(const char * cmd) {
 
     CMD_STRUCT * single_cmd = malloc(sizeof(CMD_STRUCT));
 
-    char * strtok_saveptr;
-    char * token = strtok_r(tmp_cmd, ".", &strtok_saveptr);
-    if (token == NULL)
-        return NULL;
+    char * dot_token = strstr(tmp_cmd, ".");
+    if (dot_token != NULL) {
+        char * space_token = strdup(cmd);
+        strncpy(space_token, tmp_cmd, (dot_token-tmp_cmd));
+        space_token[dot_token-tmp_cmd] = '\0';
 
-    // trim leading spaces
-    while (token[0] == ' ')
-        token = token + 1;
+        // trim leading spaces
+        while (space_token[0] == ' ')
+            space_token = space_token + 1;
 
-    // trim trailing spaces
-    size_t token_len = strlen(token);
-    while (token_len-1 >= 0 && token[token_len-1] == ' ')
-        token[--token_len] = '\0';
+        // trim trailing spaces
+        size_t token_len = strlen(space_token);
+        while (token_len-1 >= 0 && space_token[token_len-1] == ' ')
+            space_token[--token_len] = '\0';
 
-    if (strstr(token, " ") == NULL) {
-        // there is a space between start and the first '.'
-        // this means the '.' belongs to a file name and not a node identifier
+        if (strstr(space_token, " ") != NULL) {
+            // there is a space between start and the first '.'
+            // this means the '.' belongs to a file name and not a node identifier
+            single_cmd->node = -1; //self
+
+            // trim leading spaces
+            while (tmp_cmd[0] == ' ')
+                tmp_cmd = tmp_cmd + 1;
+
+            // trim trailing spaces
+            token_len = strlen(tmp_cmd);
+            while (token_len-1 >= 0 && tmp_cmd[token_len-1] == ' ')
+                tmp_cmd[--token_len] = '\0';
+            
+            single_cmd->cmd = strdup(tmp_cmd);
+        }
+        else {
+            // it is a node identifier
+            if (*(space_token+1) == '*')
+                single_cmd->node = 0; //all
+            else
+                single_cmd->node = atoi(space_token+1);
+            
+            ++dot_token;
+            
+            // trim leading spaces
+            while (dot_token[0] == ' ')
+                dot_token = dot_token + 1;
+
+            // trim trailing spaces
+            token_len = strlen(dot_token);
+            while (token_len-1 >= 0 && dot_token[token_len-1] == ' ')
+                dot_token[--token_len] = '\0';
+
+            single_cmd->cmd = strdup(dot_token);
+        }
+        free(space_token);
+    }
+    else {
         single_cmd->node = -1; //self
-        strcpy(tmp_cmd, cmd);
 
         // trim leading spaces
         while (tmp_cmd[0] == ' ')
             tmp_cmd = tmp_cmd + 1;
 
         // trim trailing spaces
-        token_len = strlen(tmp_cmd);
+        size_t token_len = strlen(tmp_cmd);
         while (token_len-1 >= 0 && tmp_cmd[token_len-1] == ' ')
             tmp_cmd[--token_len] = '\0';
-
+        
         single_cmd->cmd = strdup(tmp_cmd);
-
-        free(tmp_cmd);
-        return single_cmd;
-    }
-
-    if (*(token+1) == '*')
-        single_cmd->node = 0;
-    else
-        single_cmd->node = atoi(token+1);
-
-    token = strtok_r(NULL, "|", &strtok_saveptr);
-    if (token == NULL)
-        single_cmd->cmd = strdup("");
-    else {
-        // trim leading spaces
-        while (token[0] == ' ')
-            token = token + 1;
-
-        // trim trailing spaces
-        token_len = strlen(token);
-        while (token_len-1 >= 0 && token[token_len-1] == ' ')
-            token[--token_len] = '\0';
-
-        single_cmd->cmd = strdup(token);
     }
 
     free(tmp_cmd);
@@ -209,16 +232,18 @@ int main() {
 
     CONFIG_ENTRY ** config = read_config(CONFIG_FILE);
 
+    printf("Server started at port '%d'\n", SERVER_PORT);
+
     while (true) {
         client_sock = accept(serv_sock, (struct sockaddr *) &client_addr, &client_len);
         if (client_sock < 0)
-            err_exit("Error in accept. Exiting...\n");
+            err_exit("Error in accept. Exiting...\n", client_sock);
 
-        printf("Client Connected: %s\n", inet_ntoa(client_addr.sin_addr));
+        printf("Client Connected: %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
         pid_t client_handler = fork();
         if (client_handler < 0)
-            err_exit("Error in fork. Exiting...\n");
+            err_exit("Error in fork. Exiting...\n", -1);
         else if (client_handler == 0) {
             // close serv_sock to stop accepting connections
             close(serv_sock);
@@ -229,10 +254,10 @@ int main() {
 
                 int cmd_len = read(client_sock, cmd, MAX_CMD_LEN);
                 if (cmd_len < 0)
-                    err_exit("Error in read. Exiting...\n");
+                    err_exit("Error in read. Exiting...\n", -1);
                 cmd[cmd_len] = '\0';
 
-                printf("'%s' sent '%s'\n", inet_ntoa(client_addr.sin_addr), cmd);
+                printf("'%s:%d' sent '%s'\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port), cmd);
 
                 if (strcmp(cmd, "nodes") == 0) {
                     FILE * config_fp = fopen(CONFIG_FILE, "r");
@@ -257,6 +282,7 @@ int main() {
 
                 size_t n_cmds;
                 CMD_STRUCT ** cmds = parse_multiple_pipe_cmd(cmd, &n_cmds);
+
                 for(size_t cmd_idx = 0; cmd_idx < n_cmds; ++cmd_idx) {
                     // for each command
 
@@ -277,7 +303,7 @@ int main() {
 
                             int nbytes = write(client_sock2, cmd_prev_response, cmd_prev_response_len);
                             if (nbytes != cmd_prev_response_len)
-                                err_exit("Error in writing. Exiting...\n");
+                                err_exit("Error in writing. Exiting...\n", client_sock2);
 
                             char tmp_response[MAX_BUF_SIZE+1];
                             nbytes = read(client_sock2, tmp_response, MAX_BUF_SIZE+1);
@@ -314,7 +340,7 @@ int main() {
 
                         int nbytes = write(client_sock2, cmd_prev_response, cmd_prev_response_len);
                         if (nbytes != cmd_prev_response_len)
-                            err_exit("Error in writing. Exiting...\n");
+                            err_exit("Error in writing. Exiting...\n", client_sock2);
 
                         prev_input_len = read(client_sock2, prev_input, MAX_BUF_SIZE+1);
 
@@ -328,7 +354,7 @@ int main() {
 
                 // write back to connected client
                 write(client_sock, prev_input, prev_input_len);
-                printf("'%s' sent back to '%s'\n", prev_input, inet_ntoa(client_addr.sin_addr));
+                // printf("'%s' sent back to '%s:%d'\n", prev_input, inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
             }
 
             close(client_sock);

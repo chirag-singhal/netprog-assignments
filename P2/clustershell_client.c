@@ -10,8 +10,8 @@
 #define MAX_NUM_CLI 64
 #define MAX_CMD_LEN 1024
 #define MAX_BUF_SIZE 4096
-#define CLIENT_PORT 5000
-#define SERVER_PORT 5001
+#define CLIENT_PORT 5100
+#define SERVER_PORT 5200
 #define CONFIG_FILE "clustershell.cfg"
 
 
@@ -26,8 +26,12 @@ typedef struct _CMD_STRUCT {
 } CMD_STRUCT;
 
 
-void err_exit(const char * err_msg) {
+void err_exit(const char * err_msg, int sock_fd) {
     perror(err_msg);
+    if (sock_fd > 0) {
+        close(sock_fd);
+        printf("Closed socket %d...\n", sock_fd);
+    }
     exit(EXIT_FAILURE);
 }
 
@@ -35,7 +39,7 @@ CONFIG_ENTRY ** read_config(const char * filename) {
     CONFIG_ENTRY ** config = malloc((MAX_NUM_CLI + 1) * sizeof(CONFIG_ENTRY *));
     FILE * config_fp = fopen(filename, "r");
     if (config_fp == NULL)
-        err_exit("Error opening config. Exiting...\n");
+        err_exit("Error opening config. Exiting...\n", -1);
 
     char name[12], ip[20];
     size_t i;
@@ -67,21 +71,21 @@ int server_init(int port) {
 
     int serv_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (serv_sock < 0)
-        err_exit("Error in socket. Exiting...\n");
+        err_exit("Error in socket. Exiting...\n", -1);
 
     int sockopt_optval = 1;
     if (setsockopt(serv_sock, SOL_SOCKET, SO_REUSEADDR, &sockopt_optval, sizeof(sockopt_optval)) < 0)
-        err_exit("Error in setsockopt. Exiting...\n");
+        err_exit("Error in setsockopt. Exiting...\n", serv_sock);
 
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     serv_addr.sin_port = htons(port);
 
     if (bind(serv_sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-        err_exit("Error in bind. Exiting...\n");
+        err_exit("Error in bind. Exiting...\n", serv_sock);
 
     if (listen(serv_sock, 5) < 0)
-        err_exit("Error in listen. Exiting...\n");
+        err_exit("Error in listen. Exiting...\n", serv_sock);
 
     return serv_sock;
 }
@@ -99,7 +103,7 @@ int client_init(char * ip, int port) {
     int client_sock = socket(AF_INET, SOCK_STREAM, 0);
 
     if (connect(client_sock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
-        err_exit("Error in connect. Exiting...\n");
+        err_exit("Error in connect. Exiting...\n", client_sock);
 
     return client_sock;
 }
@@ -115,7 +119,7 @@ char * execute_single_cmd(char * cmd, size_t cmd_size, size_t * out_size) {
         return NULL;
     if (strcmp(token, "cd") == 0) {
         // handle 'cd
-        token = strtok_r(tmp_cmd, "|", &strtok_saveptr); // remaining token
+        token = strtok_r(NULL, "|", &strtok_saveptr); // remaining token
         if (chdir(token) < 0)
             perror("Error in changing directory...");
 
@@ -124,14 +128,24 @@ char * execute_single_cmd(char * cmd, size_t cmd_size, size_t * out_size) {
     }
     else {
         // run the command through shell
+        char * data = cmd + strlen(cmd) + 1;
+        
+        int pipe_fd[2];
+        if (pipe(pipe_fd) < 0)
+            err_exit("Error in pipe. Exiting...\n", -1);
+
+        write(pipe_fd[1], data, cmd_size-strlen(cmd)-1);
+        close(pipe_fd[1]);
+        dup2(pipe_fd[0], 0);
+
         FILE * cmd_fp = popen(cmd, "r");
         if (cmd_fp == NULL)
             perror("Error in popen. Exiting...\n");
-        
+
         char * cmd_out = malloc((MAX_BUF_SIZE+1) * sizeof(char));
-        *out_size = fread(cmd_fp, MAX_BUF_SIZE+1, 1, cmd_fp);
+        *out_size = fread(cmd_out, 1, MAX_BUF_SIZE+1, cmd_fp);
         if (*out_size < 0)
-            err_exit("Error in fread. Exiting...\n");
+            err_exit("Error in fread. Exiting...\n", -1);
 
         cmd_out[*out_size] = '\0';
 
@@ -154,7 +168,7 @@ void prompt() {
 int main() {
     pid_t conn_handler = fork();
     if (conn_handler < 0)
-        err_exit("Error in fork. Exiting...\n");
+        err_exit("Error in fork. Exiting...\n", -1);
     else if (conn_handler == 0) {
         // Handle communication with server and run commands requested by server
         int client_sock; // 'client_sock' represents actual server
@@ -166,13 +180,12 @@ int main() {
 
             client_sock = accept(serv_sock, (struct sockaddr *) &client_addr, &client_len);
             if (client_sock < 0)
-                err_exit("Error in accept. Exiting...\n");
+                err_exit("Error in accept. Exiting...\n", client_sock);
             
             char cmd[MAX_CMD_LEN+1];
             size_t nbytes = read(client_sock, cmd, MAX_CMD_LEN+1);
-
             if (nbytes < 0)
-                err_exit("Error in read. Exiting...\n");
+                err_exit("Error in read. Exiting...\n", client_sock);
             
             cmd[nbytes] = '\0';
 
@@ -199,14 +212,14 @@ int main() {
             cmd_len = strlen(cmd);
 
             if(write(client_connect, cmd, cmd_len) < 0)
-                err_exit("Error in writing to server. Exiting...\n");
+                err_exit("Error in writing to server. Exiting...\n", client_connect);
 
             char* server_resp = malloc(sizeof(char) * (MAX_BUF_SIZE + 1));
 
             size_t resp_size = read(client_connect, server_resp, MAX_BUF_SIZE);
 
             if(resp_size < 0)
-                err_exit("Error in reading from server. Exiting...\n");
+                err_exit("Error in reading from server. Exiting...\n", client_connect);
             
             server_resp[resp_size] = '\0';
             printf("%s\n", server_resp);
