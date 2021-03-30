@@ -77,13 +77,25 @@ int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
     return 0;
 }
 
+unsigned long hash(unsigned char *str)
+{
+    unsigned long hash = 4321;
+    int c;
+
+    while (c = *str++)
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+    return hash;
+}
+
 int get_queue_id(const char * username) {
     key_t id;
-    if (strcmp(username, "server") == 0)
-        id = 1234;
-    else
-        id = ftok(username, 'z');
-print("QUEUE ID : %d\n", id);
+    // if (strcmp(username, "server") == 0)
+    //     id = 1234;
+    // else
+    //     id = ftok(username, 'z');
+    id = hash(username);
+printf("QUEUE ID : %s %d\n", username, id);
     return msgget(id, IPC_CREAT|0666);
 }
 

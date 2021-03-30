@@ -56,11 +56,23 @@ void send_mssg(MSG* msg) {
         err_exit("Error sending message to server. Exiting...");
 }
 
+unsigned long hash(unsigned char *str)
+{
+    unsigned long hash = 5381;
+    int c;
+
+    while (c = *str++)
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+
+    return hash;
+}
+
 void* rcv_mssg() {
     
     MSG* msg = malloc(sizeof(MSG));
 
-    key_t key_client = ftok(user_name, 'z');
+    // key_t key_client = ftok(user_name, 'z');
+    key_t key_client = hash(user_name);
     int msg_id_client = msgget(key_client, 0644 | IPC_CREAT);
 printf("KEY CLIENT : %d\n", key_client);
     if(msg_id < 0) {
