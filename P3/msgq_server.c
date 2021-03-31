@@ -69,12 +69,12 @@ int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
         old_msg->start_ptr = 0;
         old_msg->n_msg++;
         old_msg->msg[0] = *msg;
-        return 0;
+        return old_msg->n_msg;
     }
 
-    old_msg->msg[(old_msg->start_ptr + old_msg->n_msg)] = *msg;
+    old_msg->msg[(old_msg->start_ptr + old_msg->n_msg) % MAX_OLD_MSG] = *msg;
     old_msg->n_msg++;
-    return 0;
+    return old_msg->n_msg;
 }
 
 unsigned long hash(unsigned char *str)
@@ -126,7 +126,7 @@ int join_group(char * groupname, char * username) {
 
             // send old messages
             int id = get_queue_id(username);
-            
+
             for (size_t i = 0; i < (grp->old_msg).n_msg; ++i) {
                 if (grp->join_time[grp->join_time[grp->n_members-1]] <
                     (grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)].time +
