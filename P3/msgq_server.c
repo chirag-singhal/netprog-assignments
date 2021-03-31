@@ -74,6 +74,7 @@ int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
 
     old_msg->msg[(old_msg->start_ptr + old_msg->n_msg)] = *msg;
     old_msg->n_msg++;
+    printf("%s\n", old_msg->msg[(old_msg->start_ptr + old_msg->n_msg - 1)].body);
     return 0;
 }
 
@@ -110,7 +111,6 @@ int join_group(char * groupname, char * username) {
         printf("Group '%s' not found...\n", groupname);
         return -1;
     }
-
     if (grp->n_members < MAX_GROUP_SIZE) {
         bool member_exist = false;
         for (size_t i = 0; i < grp->n_members; ++i) {
@@ -128,12 +128,12 @@ int join_group(char * groupname, char * username) {
             int id = get_queue_id(username);
             
             for (size_t i = 0; i < (grp->old_msg).n_msg; ++i) {
-                if (grp->join_time[grp->join_time[grp->n_members-1]] <
-                    (grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)].time +
-                    grp->delete_time) {
-                        if (msgsnd(id, &(grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)], sizeof(MSG), 0) < 0)
+                if (grp->join_time[grp->n_members-1] < (grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)].time +
+                        grp->delete_time) {
+                        if (msgsnd(id, &(grp->old_msg).msg[get_old_msg(&(grp->old_msg), i)], sizeof(MSG), 0) < 0) {
                             perror("Error in msgsnd...\n");
-                    }
+                        }
+                }
             }
             
             return grp->n_members;
@@ -166,6 +166,7 @@ int create_group(char * groupname, char * creator_name) {
         strcpy(grp.members[0], creator_name);
         grp.old_msg.start_ptr = 0;
         grp.old_msg.n_msg = 0;
+        grp.delete_time = 0;
         ++N_GROUPS;
         ALL_GROUPS[N_GROUPS++] = grp;
 
@@ -217,6 +218,7 @@ int send_group_msg(MSG * msg) {
 
     msg->time = time(NULL);
     add_old_msg(&(grp->old_msg), msg);
+    printf("%ld\n", grp->old_msg.n_msg);
     return 0;
 }
 

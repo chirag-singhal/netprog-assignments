@@ -47,8 +47,7 @@ void prompt() {
 }
 
 void err_exit(const char *err_msg) {
-    printf("%s\n", err_msg);
-    exit(EXIT_FAILURE);
+    perror(err_msg);
 }
 
 void send_mssg(MSG* msg) {
