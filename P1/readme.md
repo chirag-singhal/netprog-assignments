@@ -31,12 +31,12 @@ Chaining commands and input-output redirections work as it is like in bash.
 
 ## Double and Triple Piping
 
-Shell supoports two new pipeline operators || and |||. For example - 
+Shell supoports two new pipeline operators `||` and `|||`. For example - 
 
     ls -l || wc, cat
     ls -l ||| wc, cat, wc -m
 
-It means output of ls -l is passed as input to both wc and cat in case of || and similarly output of ls -l is passed to all the three commands in case of |||.
+It means output of `ls -l` is passed as input to both wc and cat in case of `||` and similarly output of `ls -l` is passed to all the three commands in case of `|||`.
 
 ## Short-cut mode
 
