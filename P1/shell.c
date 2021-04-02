@@ -107,9 +107,12 @@ char * search_cmd_path(const char * program) {
 void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
     // Assume the fork for this single cmd happened before this function was called
     // print_cmd_struct(cmd);
+    
+    printf("Command: %s\nProcess ID: %d\n", cmd->program, getpid());
+    
     if (cmd->in_fd != 0)
         if (dup2(cmd->in_fd, 0) == -1)
-            err_exit("#Error in dup2. Exiting...\n");
+            err_exit("Error in dup2. Exiting...\n");
     if (cmd->out_fd != 0)
         if (dup2(cmd->out_fd, 1) == -1)
             err_exit("Error in dup2. Exiting...\n");
@@ -126,6 +129,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
         else {
             dup2(in_redirect_fd, 0);
+            printf("Input file '%s' opened in fd %d. Fd %d is remapped to %d\n", cmd->in_redirect_file, in_redirect_fd, 0, in_redirect_fd);
         }
     }
     if (cmd->is_append && cmd->out_redirect_file != NULL) {
@@ -137,6 +141,7 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
         else {
             dup2(out_redirect_fd, 1);
+            printf("Append file '%s' opened in fd %d. Fd %d is remapped to %d\n", cmd->out_redirect_file, out_redirect_fd, 1, out_redirect_fd);
         }
     }
     else if (!cmd->is_append && cmd->out_redirect_file != NULL) {
@@ -148,12 +153,15 @@ void execute_single_cmd(CMD_OPTS_REDIRECT * cmd) {
         }
         else {
             dup2(out_redirect_fd, 1);
+            printf("Output file '%s' opened in fd %d. Fd %d is remapped to %d\n", cmd->out_redirect_file, out_redirect_fd, 1, out_redirect_fd);
         }
     }
 
     // 'cmd_path' is the path of directory slashed with program
     char * cmd_path = search_cmd_path(cmd->program);
     if (cmd_path != NULL) {
+        if (cmd->out_fd == 1 && cmd->out_redirect_file == NULL)
+            printf("\n************OUTPUT************\n");
         execv(cmd_path, cmd->opts);
     }
     else {
@@ -206,8 +214,8 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
             if(i < n_cmds) {
                 cmds[i-1]->out_fd = pipe_fd[i-1][1];
                 cmds[i]->in_fd = pipe_fd[i-1][0];
+                printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", cmds[i-1]->program, cmds[i]->program, pipe_fd[i-1][0], pipe_fd[i-1][1]);
             }
-
             pid_t child_cmd_pid = fork();
             if(child_cmd_pid < 0) {
                 err_exit("Error in forking. Exiting...\n");
@@ -229,6 +237,10 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
                     close(pipe_fd[i-2][0]);
                 }
                 waitpid(child_cmd_pid, &status, 0);
+                if (cmds[i-1]->out_fd == 1 && cmds[i-1]->out_redirect_file == NULL)
+                    printf("******************************\n");
+                printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+                printf("______________________________\n\n");
             }
         }
         return;
@@ -246,11 +258,15 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
     }
     else {
         int status;
-        if(cmds[0]->in_fd != 0)
-            close(cmds[0]->in_fd);
-        if(cmds[0]->out_fd != 1)
-            close(cmds[0]->out_fd);
+        if(cmds[n_cmds-1]->in_fd != 0)
+            close(cmds[n_cmds-1]->in_fd);
+        if(cmds[n_cmds-1]->out_fd != 1)
+            close(cmds[n_cmds-1]->out_fd);
         waitpid(child_cmd_pid, &status, 0);
+        if (cmds[n_cmds-1]->out_fd == 1 && cmds[n_cmds-1]->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 }
 
@@ -277,12 +293,18 @@ void execute_double_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
     }
     if (child_cmd_pid == 0) {
         // create new process for the single command
+        printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", in_cmd->program, out1_cmd->program, pipe_fd[0][0], pipe_fd[0][1]);
+        printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", in_cmd->program, out2_cmd->program, pipe_fd[1][0], pipe_fd[1][1]); 
         execute_single_cmd(in_cmd);
     }
     else {
         int status;
         close(pipe_fd[0][1]);
         waitpid(child_cmd_pid, &status, 0);
+        if (in_cmd->out_fd == 1 && in_cmd->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 
     tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
@@ -316,12 +338,19 @@ void execute_triple_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
     }
     if (child_cmd_pid == 0) {
         // create new process for the single command
+        printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", in_cmd->program, out1_cmd->program, pipe_fd[0][0], pipe_fd[0][1]);
+        printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", in_cmd->program, out2_cmd->program, pipe_fd[1][0], pipe_fd[1][1]); 
+        printf("Pipe between '%s' and '%s': Read end - %d and Write end - %d\n", in_cmd->program, out3_cmd->program, pipe_fd[2][0], pipe_fd[2][1]);
         execute_single_cmd(in_cmd);
     }
     else {
         int status;
         close(pipe_fd[0][1]);
         waitpid(child_cmd_pid, &status, 0);
+        if (in_cmd->out_fd == 1 && in_cmd->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 
     tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
@@ -835,7 +864,8 @@ int main() {
             int curr_pid = getpid();
             printf("Process details:\n");
             printf("\tProcess Id: %d\n", curr_pid);
-            printf("\tProcess Group Id: %d %d\n", getpgid(curr_pid), tcgetpgrp(STDIN_FILENO));
+            printf("\tProcess Group Id: %d\n", getpgid(curr_pid));
+            printf("\tForeground Process Group Id: %d\n", tcgetpgrp(STDIN_FILENO));
             printf("\n");
 
 
