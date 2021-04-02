@@ -183,6 +183,11 @@ int main() {
     size_t alias_len = getline(&user_name, &max_name_len, stdin);
     user_name[alias_len - 1] = '\0';
 
+    if(strcmp(user_name, "server") == 0) {
+        err_exit("Error: Username cannot be \"server\". Exiting...\n");
+        _exit(EXIT_SUCCESS);
+    }
+
     if (pthread_mutex_init(&lock, NULL) != 0) {
         err_exit("\n Error Mutex init. Exiting...\n");
     }

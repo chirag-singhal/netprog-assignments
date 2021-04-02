@@ -56,7 +56,7 @@ int get_old_msg(OLD_MSG * old_msg, size_t pos) {
     if (old_msg->n_msg == 0)
         return -1;
     
-    return (old_msg->start_ptr + pos - 1) % MAX_OLD_MSG;
+    return (old_msg->start_ptr + pos) % MAX_OLD_MSG;
 }
 
 int add_old_msg(OLD_MSG * old_msg, MSG * msg) {
@@ -217,7 +217,6 @@ int send_group_msg(MSG * msg) {
 
     msg->time = time(NULL);
     add_old_msg(&(grp->old_msg), msg);
-    printf("%ld\n", grp->old_msg.n_msg);
     return 0;
 }
 
