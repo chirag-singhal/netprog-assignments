@@ -263,8 +263,10 @@ void execute_multiple_pipe_cmd(CMD_OPTS_REDIRECT ** cmds, size_t n_cmds) {
         if(cmds[n_cmds-1]->out_fd != 1)
             close(cmds[n_cmds-1]->out_fd);
         waitpid(child_cmd_pid, &status, 0);
-        printf("******************************\n");
-        printf("\nStatus of PID %d: %d\n\n", child_cmd_pid, status);
+        if (cmds[n_cmds-1]->out_fd == 1 && cmds[n_cmds-1]->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 }
 
@@ -299,6 +301,10 @@ void execute_double_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
         int status;
         close(pipe_fd[0][1]);
         waitpid(child_cmd_pid, &status, 0);
+        if (in_cmd->out_fd == 1 && in_cmd->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 
     tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
@@ -341,6 +347,10 @@ void execute_triple_pipe_cmd(CMD_OPTS_REDIRECT * in_cmd,
         int status;
         close(pipe_fd[0][1]);
         waitpid(child_cmd_pid, &status, 0);
+        if (in_cmd->out_fd == 1 && in_cmd->out_redirect_file == NULL)
+            printf("******************************\n");
+        printf("\nStatus of PID %d: %d\n", child_cmd_pid, status);
+        printf("______________________________\n\n");
     }
 
     tee(pipe_fd[0][0], pipe_fd[1][1], INT_MAX, 0);
