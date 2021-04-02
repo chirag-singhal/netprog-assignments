@@ -738,10 +738,9 @@ int main() {
 
 
     if (sigaction(SIGINT, &sigint, NULL) == -1)
-        err_exit("nError in sigaction SIGUSR1!\n");
+        err_exit("nError in sigaction SIGINT!\n");
 
     while (true) {
-
 
         ssize_t cmd_len;
         char * cmd;
@@ -763,6 +762,7 @@ int main() {
                 sigint_rcvd = false;
                 continue;
             }
+            printf("$ %s\n\n", cmd);
             cmd = strdup(cmd);
             cmd_len = strlen(cmd);
             sigint_rcvd = false;
@@ -887,7 +887,8 @@ int main() {
             int status;
             if(!is_bg_proc)
                 waitpid(child_exec, &status, WUNTRACED);
-            tcsetpgrp(0, getpid());
+            if(tcgetpgrp(STDERR_FILENO) != getpgid(getpid()))
+                tcsetpgrp(STDIN_FILENO, getpid());
             signal(SIGTTOU, SIG_DFL);
         }
 
