@@ -1,3 +1,3 @@
 # P3 Group Chat Management System
 
-This exercise develops a group chat system which allows users to create groups, list all groups on server, join group, send private and group messages and receive messages in online as well as offline mode. The chat system also implements a option which can be set for a group where users who joins a group after < t > seconds from the time of message creation also receives it.
+This exercise develops a group chat system which allows users to create groups, list all groups on the server, join groups, send private and group messages and receive messages in online as well as offline mode. The chat system also implements an option which can be set for a group where users who join a group after < t > seconds from the time of message creation also receive it.
