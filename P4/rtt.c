@@ -23,10 +23,11 @@
 
 
 #define NUM_MAX_EVENTS  10      // maximum triggered events received from epoll_wait
-#define EPOLL_TIMEOUT   10000   // maximum timeout for epoll_wait in milliseconds
+#define EPOLL_TIMEOUT   30000   // maximum timeout for epoll_wait in milliseconds
+#define MAX_RETRIES     1000    // Maximum number of retries for open file socket
 
 
-int n_complete;
+int n_complete, n_retries;
 
 struct host_info {
     bool valid;
@@ -65,6 +66,14 @@ unsigned short checksum(void *b, int len) {
 
 int send_v4(char ip[41], int epoll_fd) {
     int sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    while (sock_fd == -1 && errno == EMFILE && n_retries > 0) {
+        sleep(1);
+        sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+        --n_retries;
+    }
+    if (n_retries <= 0)
+        return -1;
+
     int sock_flags = fcntl(sock_fd, F_GETFL, 0);
     fcntl(sock_fd, F_SETFL, sock_flags | O_NONBLOCK);
 
@@ -132,6 +141,14 @@ int send_v4(char ip[41], int epoll_fd) {
 
 int send_v6(char ip[41], int epoll_fd) {
     int sock_fd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+    while (sock_fd == -1 && errno == EMFILE && n_retries > 0) {
+        sleep(1);
+        sock_fd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+        --n_retries;
+    }
+    if (n_retries <= 0)
+        return -1;
+    
     int sock_flags = fcntl(sock_fd, F_GETFL, 0);
     fcntl(sock_fd, F_SETFL, sock_flags | O_NONBLOCK);
 
@@ -215,7 +232,7 @@ void * receive_reply_func(void * args) {
         clock_gettime(CLOCK_MONOTONIC, &recv_time); // get receive time
         
         if (event_count == 0) {
-            printf("Maximum epoll wait timeout reached!\n");
+            printf("\nMaximum epoll wait timeout reached!\n");
             break;
         }
         else if (event_count == -1)
@@ -273,7 +290,8 @@ void * receive_reply_func(void * args) {
             }
         }
     }
-    
+    printf("\nNumber of IPs pinged: %d\n", n_complete);
+
     free(ip_icmp_payload);
 
     // Output of thread. In this case, there is nothing to return
@@ -288,6 +306,7 @@ int main(int argc, char * argv[]) {
     // Assumption: All the hosts in the file are unique
     size_t num_hosts = 0;
     n_complete = 0;
+    n_retries = MAX_RETRIES;
     
     FILE * hosts_fp;
     if ((hosts_fp = fopen(argv[1], "r")) == NULL)
@@ -327,11 +346,19 @@ int main(int argc, char * argv[]) {
         if (strstr(ip, ".")) {
             // ipv4 address
             sock_fd = send_v4(ip, epoll_fd);
+            if (sock_fd == -1 && n_retries <= 0) {
+                printf("\nMaximum number of retries reached. Exiting...\n");
+                break;
+            }
             hosts[sock_fd].isIPv6 = 0;
         }
         else {
             // ipv6 address
             sock_fd = send_v6(ip, epoll_fd);
+            if (sock_fd == -1 && n_retries <= 0) {
+                printf("\nMaximum number of retries reached. Exiting...\n");
+                break;
+            }
             hosts[sock_fd].isIPv6 = 1;
         }
         hosts[sock_fd].valid = true;
@@ -340,9 +367,9 @@ int main(int argc, char * argv[]) {
     }
 
     pthread_join(thread_id, NULL);
-
     close(epoll_fd);
     free(hosts);
 
+    printf("\n");
     return EXIT_SUCCESS;
 }
