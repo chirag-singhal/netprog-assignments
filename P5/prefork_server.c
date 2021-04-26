@@ -22,6 +22,7 @@ int listen_fd;
 struct proc_info {
     pid_t pid;
     int status;
+    int n_conn;
 };
 
 enum serv_status {
@@ -33,7 +34,10 @@ enum serv_status {
 
 struct ctrl_msg {
     int status;
+    int n_conn;
 };
+
+bool sigint_rcvd = false;
 
 void err_exit(const char * err_msg) {
     perror(err_msg);
@@ -48,6 +52,11 @@ int min(int a, int b) {
     return (a < b) ? a : b;
 }
 
+
+void sigint_handler(int sig) {
+    sigint_rcvd = true;
+}
+
 void handle_conn(int ctrl_fd) {
     // Handle HTTP requests (maxReqPerChild)
     // Notify parent of every change (serv_status)
@@ -55,18 +64,25 @@ void handle_conn(int ctrl_fd) {
 
     // Send IDLE status message to parent
     msg.status = SS_IDLE;
+    msg.n_conn = 0;
     send(ctrl_fd, &msg, sizeof(msg), 0);
 
-    size_t cli_addr_len;
+    socklen_t cli_addr_len;
     struct sockaddr_in cli_addr;
 
     char http_buf[2000];
-    
+
+    int n_handled = 0;
     for (int n_req = maxReqPerChild; n_req > 0; --n_req) {
         // accept connection and handle request
-        int conn_fd = accept(listen_fd, &cli_addr, &cli_addr_len);
+        int conn_fd = accept(listen_fd, (struct sockaddr*) &cli_addr, &cli_addr_len);
         msg.status = SS_BUSY;
+        msg.n_conn = n_handled;
         send(ctrl_fd, &msg, sizeof(msg), 0);
+
+        char ip_buf[20];
+        inet_ntop(AF_INET, &(cli_addr.sin_addr), ip_buf, 40);
+        printf("* PID= %-8d\tClient IP= %20s:%04d\n\n", getpid(), ip_buf, ntohs(cli_addr.sin_port));
 
         // Receive and send dummy HTTP message
         recv(conn_fd, http_buf, 2000, 0);
@@ -74,17 +90,22 @@ void handle_conn(int ctrl_fd) {
         send(conn_fd, http_buf, 2000, 0); // TODO: Respond with proper dummy response
 
         close(conn_fd);
+        
+        ++n_handled;
+        
         msg.status = SS_IDLE;
+        msg.n_conn = n_handled;
         send(ctrl_fd, &msg, sizeof(msg), 0);
     }
 
     // Send EXIT status message to parent
     msg.status = SS_EXIT;
+    msg.n_conn = n_handled;
     send(ctrl_fd, &msg, sizeof(msg), 0);
     _exit(EXIT_SUCCESS);
 }
 
-void create_serv(int epoll_fd, struct proc_info * child_procs, size_t * n_child_procs) {
+int create_serv(int epoll_fd, struct proc_info * child_procs, size_t * n_child_procs) {
     // Create a UNIX Domain socket and fork
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
@@ -114,7 +135,10 @@ void create_serv(int epoll_fd, struct proc_info * child_procs, size_t * n_child_
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sv[0], &event);
 
     child_procs[sv[0]].pid = pid_serv;
+    child_procs[sv[0]].n_conn = 0;
     *n_child_procs += 1;
+
+    return pid_serv;
 }
 
 void create_serv_expo(int n_serv, int epoll_fd, struct proc_info * child_procs, size_t * n_child_procs) {
@@ -150,6 +174,13 @@ int main(int argc, char * argv[]) {
 
     struct ctrl_msg msg_buf;
 
+    struct sigaction sigint;
+    sigint.sa_handler = sigint_handler;
+    sigint.sa_flags = 0;
+    sigemptyset(&sigint.sa_mask);
+    
+    sigaction(SIGINT, &sigint, NULL);
+
     // Set up signal handler
 
 
@@ -160,45 +191,103 @@ int main(int argc, char * argv[]) {
     cli_addr.sin_addr.s_addr = INADDR_ANY;
     
     listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (bind(listen_fd, &cli_addr, sizeof(cli_addr)) == -1)
+    if (bind(listen_fd, (struct sockaddr*)&cli_addr, sizeof(cli_addr)) == -1)
         err_exit("Error in bind. Exiting...\n");
 
     if (listen(listen_fd, 10) == -1)
         err_exit("Error in listen. Exiting...\n");
     
     // Initial creation of process pool
-    create_serv_expo(minSpareServ, child_procs, &n_child_procs);
+    create_serv_expo(minSpareServ, epoll_fd, child_procs, &n_child_procs);
 
     // Process-pool control logic
+    int min_serv_tmp = 1, n_busy = 0, n_idle = 0;
     while (true) {
         // Wait on epoll instance
+
+        if(sigint_rcvd) {
+            printf(">>> Num Child Procs: %6ld\n", n_child_procs);
+            for(int i = 0; i < max_child_procs; i++) {
+                if(child_procs[i].status == SS_IDLE || child_procs[i].status == SS_BUSY) {
+                    printf("PID: %d\t Number of clients handled: %d\n", child_procs[i].pid, child_procs[i].n_conn);
+                }
+            }
+            sigint_rcvd = false;
+        }
+
         n_events = epoll_wait(epoll_fd, trig_events, 10, -1);
+
         
         // Update status or kill exhausted process
         for (int i = 0; i < n_events; ++i) {
-            recv(trig_events[i].data.fd, &msg_buf, sizeof(msg_buf), 0);
+            if (recv(trig_events[i].data.fd, &msg_buf, sizeof(msg_buf), 0) == -1 && errno == EINTR)
+                continue;
             if (msg_buf.status == SS_EXIT) {
+                // Kill and recycle
                 waitpid(child_procs[trig_events[i].data.fd].pid, NULL, 0);
+                int _tmp_pid = child_procs[trig_events[i].data.fd].pid;
+                if (child_procs[trig_events[i].data.fd].status == SS_IDLE) {
+                    --n_idle;
+                }
                 child_procs[trig_events[i].data.fd].pid = 0;
                 child_procs[trig_events[i].data.fd].status = SS_INIT;
+                child_procs[trig_events[i].data.fd].n_conn = 0;
                 --n_child_procs;
+
+                int _tmp_new_pid = create_serv(epoll_fd, child_procs, &n_child_procs);
+
+                printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed PID %d, Created PID %d'\n\n", n_child_procs, n_busy, "RECYCLE", _tmp_pid, _tmp_new_pid);
             }
-            else
+            else if (msg_buf.status == SS_BUSY) {
+                if (child_procs[trig_events[i].data.fd].status == SS_IDLE) {
+                    --n_idle;
+                    ++n_busy;
+                }
                 child_procs[trig_events[i].data.fd].status = msg_buf.status;
+                child_procs[trig_events[i].data.fd].n_conn = msg_buf.n_conn;
+            }
+            else { // SS_IDLE
+                if (child_procs[trig_events[i].data.fd].status == SS_BUSY) {
+                    ++n_idle;
+                    --n_busy;
+                }
+                else if (child_procs[trig_events[i].data.fd].status != SS_IDLE)
+                    ++n_idle;
+                child_procs[trig_events[i].data.fd].status = msg_buf.status;
+                child_procs[trig_events[i].data.fd].n_conn = msg_buf.n_conn;
+            }
         }
 
         // Take action based on the incoming control message
-        if (n_child_procs > maxSpareServ) {
-            // delete excess processes
-            for (int i = 0; i < max_child_procs; ++i) {
-                if (child_procs[i].pid > 0 && child_procs[i].status == SS_IDLE) {
-                    kill(child_procs[i].pid, SIGKILL);
-                    waitpid(child_procs[i].pid, NULL, 0);
-                    child_procs[i].pid = 0;
-                    child_procs[i].status = SS_INIT;
-                    --n_child_procs;
-                }
+        
+        // Delete excess processes
+        int n_del = 0;
+        for (int i = 0; n_idle > maxSpareServ && i < max_child_procs; ++i) {
+            if (child_procs[i].pid > 0 && child_procs[i].status == SS_IDLE) {
+                kill(child_procs[i].pid, SIGKILL);
+                waitpid(child_procs[i].pid, NULL, 0);
+                --n_idle;
+                child_procs[i].pid = 0;
+                child_procs[i].status = SS_INIT;
+                child_procs[i].n_conn = 0;
+                --n_child_procs;
+                ++n_del;
             }
+        }
+        if (n_del)
+            printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed %d excess child processes'\n\n", n_child_procs, n_busy, "KILL_EXCESS_PROC", n_del);
+        
+        // Add new processes to pool and sleep
+        if (n_idle < minSpareServ) {
+            for (int i = 0; i < min_serv_tmp; ++i)
+                create_serv(epoll_fd, child_procs, &n_child_procs);
+            if (min_serv_tmp < 32)
+                min_serv_tmp *= 2;
+            printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed %d excess child processes'\n\n", n_child_procs, n_busy, "ADD_NEW_PROC", min_serv_tmp);
+            sleep(1);
+        }
+        if (n_child_procs >= minSpareServ) {
+            min_serv_tmp = 1;
         }
     }
 
