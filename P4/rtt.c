@@ -66,6 +66,8 @@ unsigned short checksum(void *b, int len) {
 
 int send_v4(char ip[41], int epoll_fd) {
     int sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (sock_fd == -1 && errno == EACCES)
+        err_exit("Permission denied! Try using 'sudo'. Exiting...\n");
     while (sock_fd == -1 && errno == EMFILE && n_retries > 0) {
         sleep(1);
         sock_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -95,7 +97,7 @@ int send_v4(char ip[41], int epoll_fd) {
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event) == -1) {
         close(epoll_fd);
-        err_exit("Error in adding socket to epoll. Exiting...\n");
+        err_exit("Error in adding socket to epoll. Try using 'sudo'. Exiting...\n");
     }
 
     struct timespec send_time;
@@ -141,6 +143,8 @@ int send_v4(char ip[41], int epoll_fd) {
 
 int send_v6(char ip[41], int epoll_fd) {
     int sock_fd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+    if (sock_fd == -1 && errno == EACCES)
+        err_exit("Permission denied! Try using 'sudo'. Exiting...\n");
     while (sock_fd == -1 && errno == EMFILE && n_retries > 0) {
         sleep(1);
         sock_fd = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
@@ -165,7 +169,7 @@ int send_v6(char ip[41], int epoll_fd) {
 
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event) == -1) {
         close(epoll_fd);
-        err_exit("Error in adding socket to epoll. Exiting...\n");
+        err_exit("Error in adding socket to epoll. Try using 'sudo'. Exiting...\n");
     }
 
     struct timespec send_time;
@@ -236,7 +240,7 @@ void * receive_reply_func(void * args) {
             break;
         }
         else if (event_count == -1)
-            err_exit("Error in epoll wait. Exiting...\n");
+            err_exit("Error in epoll wait. Try using 'sudo'. Exiting...\n");
         
         for (int i = 0; i < event_count; ++i) {
             struct epoll_event * event = &(trig_events[i]);
