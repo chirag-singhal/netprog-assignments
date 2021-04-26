@@ -60,6 +60,7 @@ void handle_conn(int ctrl_fd) {
 
         // Receive and send dummy HTTP message
         recv(conn_fd, http_buf, 2000, 0);
+        sleep(1);
         send(conn_fd, http_buf, 2000, 0); // TODO: Respond with proper dummy response
 
         close(conn_fd);
@@ -134,7 +135,14 @@ int main(int argc, char * argv[]) {
     if (listen(listen_fd, 10) == -1)
         err_exit("Error in listen. Exiting...\n");
     
+    // Initial creation of process pool
     create_serv_expo(minSpareServ);
+
+    // Process-pool control logic
+    while (true) {
+        // Wait on epoll instance
+        // Take action based on the incoming control message
+    }
 
     return EXIT_SUCCESS;
 }
