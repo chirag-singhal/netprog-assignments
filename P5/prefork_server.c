@@ -305,7 +305,7 @@ int main(int argc, char * argv[]) {
             printf("\n>>> Num Child Procs: %-6ld\tSpare Procs: %-6d\tNum Clients: %-6d\n>>  Action= %-15s\tStatus= 'Added %d processes to pool'\n\n", n_child_procs, n_idle, n_busy, "ADD_NEW_PROC", min_serv_tmp);
             if (min_serv_tmp < 32)
                 min_serv_tmp *= 2;
-            // sleep(1);
+            sleep(1);
         }
         if (n_idle >= minSpareServ) {
             min_serv_tmp = 1;
