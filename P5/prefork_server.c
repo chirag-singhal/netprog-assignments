@@ -16,6 +16,7 @@
 #include <errno.h>
 
 #define SERVER_PORT 8080
+#define DEBUG       1       // Change to 1 for verbose status messages
 
 int minSpareServ, maxSpareServ, maxReqPerChild;
 int listen_fd;
@@ -120,10 +121,6 @@ int create_serv(int epoll_fd, struct proc_info * child_procs, size_t * n_child_p
     int sv[2];
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == -1)
         err_exit("Error in socketpair. Exiting...\n");
-    // int sock_flags = fcntl(sv[0], F_GETFL, 0);
-    // fcntl(sv[0], F_SETFL, sock_flags | O_NONBLOCK);
-    // sock_flags = fcntl(sv[1], F_GETFL, 0);
-    // fcntl(sv[1], F_SETFL, sock_flags | O_NONBLOCK);
 
     pid_t pid_serv = fork();
     if (pid_serv == -1)
@@ -162,6 +159,7 @@ void create_serv_expo(int n_serv, int epoll_fd, struct proc_info * child_procs, 
             create_serv(epoll_fd, child_procs, n_child_procs);
         }
     }
+    printf("@@ Server starting with %d processes in pool.\n\n", n_created);
 }
 
 int main(int argc, char * argv[]) {
@@ -207,6 +205,8 @@ int main(int argc, char * argv[]) {
     if (listen(listen_fd, 10) == -1)
         err_exit("Error in listen. Exiting...\n");
 
+    printf("@@ Server listening on PORT %d.\n", SERVER_PORT);
+
     // Initial creation of process pool
     create_serv_expo(minSpareServ, epoll_fd, child_procs, &n_child_procs);
 
@@ -231,6 +231,7 @@ int main(int argc, char * argv[]) {
             continue;
         
         // Update status or kill exhausted process
+        int n_new_conn = 0, n_new_idle = 0;
         for (int i = 0; i < n_events; ++i) {
             if (recv(trig_events[i].data.fd, &msg_buf, sizeof(msg_buf), 0) == -1 && errno == EINTR)
                 continue;
@@ -260,6 +261,7 @@ int main(int argc, char * argv[]) {
                 if (child_procs[trig_events[i].data.fd].status == SS_IDLE) {
                     --n_idle;
                     ++n_busy;
+                    ++n_new_conn;
                 }
                 child_procs[trig_events[i].data.fd].status = msg_buf.status;
                 child_procs[trig_events[i].data.fd].n_conn = msg_buf.n_conn;
@@ -268,13 +270,18 @@ int main(int argc, char * argv[]) {
                 if (child_procs[trig_events[i].data.fd].status == SS_BUSY) {
                     ++n_idle;
                     --n_busy;
+                    ++n_new_idle;
                 }
-                else if (child_procs[trig_events[i].data.fd].status != SS_IDLE)
+                else if (child_procs[trig_events[i].data.fd].status != SS_IDLE) {
                     ++n_idle;
+                    ++n_new_idle;
+                }
                 child_procs[trig_events[i].data.fd].status = msg_buf.status;
                 child_procs[trig_events[i].data.fd].n_conn = msg_buf.n_conn;
             }
         }
+        if (DEBUG && (n_new_conn || n_new_idle))
+            printf("\n@@ Received %d new connections on %d spare procs.\n@  %d procs turned IDLE.\n\n", n_new_conn, n_new_conn, n_new_idle);
 
         // Take action based on the incoming control message
         
