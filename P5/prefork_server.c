@@ -15,6 +15,7 @@
 #include <netinet/in.h>
 #include <errno.h>
 
+#define SERVER_PORT 8080
 
 int minSpareServ, maxSpareServ, maxReqPerChild;
 int listen_fd;
@@ -67,7 +68,7 @@ void handle_conn(int ctrl_fd) {
     msg.n_conn = 0;
     send(ctrl_fd, &msg, sizeof(msg), 0);
 
-    socklen_t cli_addr_len;
+    socklen_t cli_addr_len = sizeof(struct sockaddr_in);
     struct sockaddr_in cli_addr;
 
     char http_buf[2000];
@@ -75,14 +76,23 @@ void handle_conn(int ctrl_fd) {
     int n_handled = 0;
     for (int n_req = maxReqPerChild; n_req > 0; --n_req) {
         // accept connection and handle request
+        cli_addr_len = sizeof(struct sockaddr_in);
         int conn_fd = accept(listen_fd, (struct sockaddr*) &cli_addr, &cli_addr_len);
+        if (conn_fd == -1) {
+            char err_buf[40];
+            sprintf(err_buf, "* PID= %-8d\tError in accept...\n", getpid());
+            perror(err_buf);
+            ++n_req;
+            continue;
+        }
+        
         msg.status = SS_BUSY;
         msg.n_conn = n_handled;
         send(ctrl_fd, &msg, sizeof(msg), 0);
 
         char ip_buf[20];
         inet_ntop(AF_INET, &(cli_addr.sin_addr), ip_buf, 40);
-        printf("* PID= %-8d\tClient IP= %20s:%04d\n\n", getpid(), ip_buf, ntohs(cli_addr.sin_port));
+        printf("* PID= %-8d\tClient IP= %20s:%04d\n", getpid(), ip_buf, ntohs(cli_addr.sin_port));
 
         // Receive and send dummy HTTP message
         recv(conn_fd, http_buf, 2000, 0);
@@ -122,6 +132,7 @@ int create_serv(int epoll_fd, struct proc_info * child_procs, size_t * n_child_p
         // sv[1] is child socket
         close(sv[0]);
         handle_conn(sv[1]);
+        _exit(EXIT_SUCCESS);
     }
     else {
         close(sv[1]);
@@ -162,7 +173,7 @@ int main(int argc, char * argv[]) {
     maxSpareServ = atoi(argv[2]);
     maxReqPerChild = atoi(argv[3]);
 
-    // +10 is safety buffer incase some file is opened
+    // +10 is safety buffer incase some file is opened (including stdin and stdout)
     size_t n_child_procs = 0, max_child_procs = maxSpareServ + 32 + 10;
     struct proc_info * child_procs = malloc(max_child_procs * sizeof(struct proc_info));
     memset(child_procs, 0, sizeof(max_child_procs * sizeof(struct proc_info)));
@@ -170,25 +181,24 @@ int main(int argc, char * argv[]) {
     // Epoll instance
     int epoll_fd = epoll_create1(0);
     int n_events;
-    struct epoll_event trig_events[10];
+    struct epoll_event event, trig_events[50];
 
     struct ctrl_msg msg_buf;
 
+    // Set up signal handler
     struct sigaction sigint;
     sigint.sa_handler = sigint_handler;
     sigint.sa_flags = 0;
     sigemptyset(&sigint.sa_mask);
-    
+    sigaddset(&sigint.sa_mask, SIGINT);
+
     sigaction(SIGINT, &sigint, NULL);
-
-    // Set up signal handler
-
 
     // Bind and listen on listen_fd
     struct sockaddr_in cli_addr;
     cli_addr.sin_family = AF_INET;
-    cli_addr.sin_port = 8080;
-    cli_addr.sin_addr.s_addr = INADDR_ANY;
+    cli_addr.sin_port = htons(SERVER_PORT);
+    cli_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     
     listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (bind(listen_fd, (struct sockaddr*)&cli_addr, sizeof(cli_addr)) == -1)
@@ -196,9 +206,10 @@ int main(int argc, char * argv[]) {
 
     if (listen(listen_fd, 10) == -1)
         err_exit("Error in listen. Exiting...\n");
-    
+
     // Initial creation of process pool
     create_serv_expo(minSpareServ, epoll_fd, child_procs, &n_child_procs);
+
 
     // Process-pool control logic
     int min_serv_tmp = 1, n_busy = 0, n_idle = 0;
@@ -206,17 +217,18 @@ int main(int argc, char * argv[]) {
         // Wait on epoll instance
 
         if(sigint_rcvd) {
-            printf(">>> Num Child Procs: %6ld\n", n_child_procs);
+            printf("\n~~ Num Child Procs: %ld\n", n_child_procs);
             for(int i = 0; i < max_child_procs; i++) {
-                if(child_procs[i].status == SS_IDLE || child_procs[i].status == SS_BUSY) {
-                    printf("PID: %d\t Number of clients handled: %d\n", child_procs[i].pid, child_procs[i].n_conn);
+                if(child_procs[i].pid > 0 && (child_procs[i].status == SS_IDLE || child_procs[i].status == SS_BUSY)) {
+                    printf("~ PID: %d\t Number of clients handled: %d\n", child_procs[i].pid, child_procs[i].n_conn);
                 }
             }
             sigint_rcvd = false;
         }
 
-        n_events = epoll_wait(epoll_fd, trig_events, 10, -1);
-
+        n_events = epoll_wait(epoll_fd, trig_events, 50, -1);
+        if (n_events == -1 && errno == EINTR)
+            continue;
         
         // Update status or kill exhausted process
         for (int i = 0; i < n_events; ++i) {
@@ -229,14 +241,20 @@ int main(int argc, char * argv[]) {
                 if (child_procs[trig_events[i].data.fd].status == SS_IDLE) {
                     --n_idle;
                 }
+                else if (child_procs[trig_events[i].data.fd].status == SS_BUSY) {
+                    --n_busy;
+                }
+                --n_child_procs;
+                
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, trig_events[i].data.fd, &event);
+                
                 child_procs[trig_events[i].data.fd].pid = 0;
                 child_procs[trig_events[i].data.fd].status = SS_INIT;
                 child_procs[trig_events[i].data.fd].n_conn = 0;
-                --n_child_procs;
 
                 int _tmp_new_pid = create_serv(epoll_fd, child_procs, &n_child_procs);
 
-                printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed PID %d, Created PID %d'\n\n", n_child_procs, n_busy, "RECYCLE", _tmp_pid, _tmp_new_pid);
+                printf("\n>>> Num Child Procs: %-6ld\tSpare Procs: %-6d\tNum Clients: %-6d\n>>  Action= %-15s\tStatus= 'Killed PID %d, Created PID %d'\n\n", n_child_procs, n_idle, n_busy, "RECYCLE", _tmp_pid, _tmp_new_pid);
             }
             else if (msg_buf.status == SS_BUSY) {
                 if (child_procs[trig_events[i].data.fd].status == SS_IDLE) {
@@ -267,28 +285,32 @@ int main(int argc, char * argv[]) {
                 kill(child_procs[i].pid, SIGKILL);
                 waitpid(child_procs[i].pid, NULL, 0);
                 --n_idle;
+                --n_child_procs;
+                ++n_del;
+                
+                epoll_ctl(epoll_fd, EPOLL_CTL_DEL, i, &event);
+                
                 child_procs[i].pid = 0;
                 child_procs[i].status = SS_INIT;
                 child_procs[i].n_conn = 0;
-                --n_child_procs;
-                ++n_del;
             }
         }
         if (n_del)
-            printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed %d excess child processes'\n\n", n_child_procs, n_busy, "KILL_EXCESS_PROC", n_del);
+            printf("\n>>> Num Child Procs: %-6ld\tSpare Procs: %-6d\tNum Clients: %-6d\n>>  Action= %-15s\tStatus= 'Killed %d excess child processes'\n\n", n_child_procs, n_idle, n_busy, "KILL_EXCESS_PROC", n_del);
         
         // Add new processes to pool and sleep
         if (n_idle < minSpareServ) {
             for (int i = 0; i < min_serv_tmp; ++i)
                 create_serv(epoll_fd, child_procs, &n_child_procs);
+            printf("\n>>> Num Child Procs: %-6ld\tSpare Procs: %-6d\tNum Clients: %-6d\n>>  Action= %-15s\tStatus= 'Added %d processes to pool'\n\n", n_child_procs, n_idle, n_busy, "ADD_NEW_PROC", min_serv_tmp);
             if (min_serv_tmp < 32)
                 min_serv_tmp *= 2;
-            printf(">>> Num Child Procs: %6ld\tNum Clients: %6d\n>>> Action= %-15s\tStatus= 'Killed %d excess child processes'\n\n", n_child_procs, n_busy, "ADD_NEW_PROC", min_serv_tmp);
-            sleep(1);
+            // sleep(1);
         }
-        if (n_child_procs >= minSpareServ) {
+        if (n_idle >= minSpareServ) {
             min_serv_tmp = 1;
         }
+
     }
 
     close(epoll_fd);
