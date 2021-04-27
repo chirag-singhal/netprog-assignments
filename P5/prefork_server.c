@@ -80,9 +80,11 @@ void handle_conn(int ctrl_fd) {
         cli_addr_len = sizeof(struct sockaddr_in);
         int conn_fd = accept(listen_fd, (struct sockaddr*) &cli_addr, &cli_addr_len);
         if (conn_fd == -1) {
-            char err_buf[40];
-            sprintf(err_buf, "* PID= %-8d\tError in accept...\n", getpid());
-            perror(err_buf);
+            if (errno != EINTR) {
+                char err_buf[40];
+                sprintf(err_buf, "* PID= %-8d\tError in accept...\n", getpid());
+                perror(err_buf);
+            }
             ++n_req;
             continue;
         }
@@ -217,7 +219,7 @@ int main(int argc, char * argv[]) {
         // Wait on epoll instance
 
         if(sigint_rcvd) {
-            printf("\n~~ Num Child Procs: %ld\n", n_child_procs);
+            printf("\n~~ Num Child Procs: %-6ld\tSpare Procs: %-6d\tNum Clients: %-6d\n", n_child_procs, n_idle, n_busy);
             for(int i = 0; i < max_child_procs; i++) {
                 if(child_procs[i].pid > 0 && (child_procs[i].status == SS_IDLE || child_procs[i].status == SS_BUSY)) {
                     printf("~ PID: %d\t Number of clients handled: %d\n", child_procs[i].pid, child_procs[i].n_conn);
