@@ -15,6 +15,8 @@
 #include <netinet/ip.h>
 #include <netdb.h>
 #include <errno.h>
+#include <dirent.h> 
+#include <sys/stat.h>
 
 #define PORT        5000
 #define MAX_GROUPS  20
@@ -28,7 +30,7 @@ struct group_info {
 };
 
 enum msg_type {
-    MT_MSG
+    MT_TEXT,
     MT_FINDGRP_REQ,
     MT_FINDGRP_REP,
     MT_FILELIST_REQ, // not used, req is just blank
@@ -39,15 +41,19 @@ enum msg_type {
     MT_POLL_REP
 };
 
+struct text_data {
+    char                    text[500];
+};
+
 struct findgrp_req_data {
     char                    group_name[30];
-}
+};
 
 struct findgrp_rep_data {
     char                    group_name[30];
     struct in_addr          group_addr;
     in_port_t               group_port;
-}
+};
 
 struct filelist_rep_data {
     int                     n_files;
@@ -57,12 +63,12 @@ struct filelist_rep_data {
 
 struct file_req_data {
     char                    file_name[30];
-}
+};
 
 // The actual file data is sent by appending it with the header via TCP
 struct file_rep_data {
     char                    file_name[30];    
-}
+};
 
 struct poll_req_data {
     char                    group_name[30];
@@ -80,6 +86,7 @@ struct multicast_msg {
     struct in_addr              src_addr;
     in_port_t                   src_port;
     union {
+        struct text_data            text;
         struct findgrp_req_data     findgrp_req;
         struct findgrp_rep_data     findgrp_rep;
         struct filelist_rep_data    filelist_rep;
@@ -90,13 +97,12 @@ struct multicast_msg {
 };
 
 // GLOBALS
-bool sigalrm_rcvd;
+int sock_fd, epoll_fd;
 struct group_info groups[MAX_GROUPS]; size_t n_groups;
+struct in_addr host_addr;
+char local_files[100][30]; size_t n_local_files;
+char remote_files[MAX_GROUPS * 100][30]; size_t n_remote_files;
 
-
-void sigalrm_handler(int sig) {
-    sigalrm_rcvd = true;
-}
 
 void err_exit(const char * err_msg) {
     perror(err_msg);
@@ -111,13 +117,58 @@ int min(int a, int b) {
     return (a < b) ? a : b;
 }
 
-void share_filenames() {
+void share_filenames(bool is_infinite, char group_name[30]) {
 
+    while(true) {
+        DIR *files;
+        struct multicast_msg msg = {0};
+        struct dirent *dir;
+        files = opendir(".");
+        int n_files = 0;
+
+        if (files != NULL) {
+            while ((dir = readdir(files)) != NULL) {
+                struct stat eStat;
+                stat(dir -> d_name, &eStat);
+                if(!S_ISDIR(eStat.st_mode)) {
+                    strcpy(local_files[n_files], dir -> d_name); 
+                    strcpy(msg.data.filelist_rep.files[n_files++], dir -> d_name); 
+                }
+            }
+            closedir(files);
+        }
+        msg.data.filelist_rep.n_files = n_files;
+
+        for(int i = 0; i < n_groups; i++) 
+            strcpy(msg.data.filelist_rep.visited_grps[i], groups[i].name);
+            
+        for (size_t i = 0; i < n_groups; ++i) {
+            if(is_infinite || strcmp(group_name, groups[i].name) == 0) {
+                msg.type = MT_FILELIST_REP;
+                msg.src_addr = host_addr;
+                msg.src_port = PORT;
+                msg.data.findgrp_rep.group_port = groups[i].port;
+                msg.data.findgrp_rep.group_addr = groups[i].addr;
+
+                struct sockaddr_in addr;
+                addr.sin_family = AF_INET;
+                addr.sin_port = htons(groups[i].port);
+                addr.sin_addr = groups[i].addr;
+                sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            }
+        }
+        if(!is_infinite) 
+            return;
+        sleep(60);
+    }
 }
 
-void create_group(char group_name[30], char group_ip[40], in_port_t group_port) {
+void create_group(char group_name[30], char group_ip[40], in_port_t group_port, int joinflag) {
+    // joinflag = 0 -> "Create"
+    // joinflag = 1 -> "Join"
+    
     if (n_groups >= MAX_GROUPS) {
-        printf("! Cannot create group. Maximum group limit already reached...\n");
+        printf("! Cannot %s group. Maximum group limit already reached...\n", (joinflag)?"Join":"Create");
         return;
     }
 
@@ -155,54 +206,342 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port) 
     groups[n_groups].fd = fd;
     ++n_groups;
 
-    printf(">> Created group '%s' on %s:%d\n\n", group_name, group_ip, group_port);
+    struct epoll_event event;
+    event.events = EPOLLIN;
+    event.data.fd = fd;
+    epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &event);
+
+    printf(">> %s group '%s' on %s:%d\n\n", (joinflag)?"Joined":"Created", group_name, group_ip, group_port);
 }
 
-void find_group(char group_name[30]) {
+void find_group_rep(struct multicast_msg * msg) {
     
     for (size_t i = 0; i < n_groups; ++i) {
-        if (strcmp(group_name, groups[i].name) == 0) {
-            printf(">> Group '%s' found locally on %s:%d\n\n", group_name, groups[i].addr, groups[i].port);
+        if (strcmp((msg->data).findgrp_req.group_name, groups[i].name) == 0) {
+            struct multicast_msg rep_msg = {0};
+            rep_msg.type = MT_FINDGRP_REP;
+            rep_msg.src_addr = host_addr;
+            rep_msg.src_port = PORT;
+            strcpy(rep_msg.data.findgrp_rep.group_name, groups[i].name);
+            rep_msg.data.findgrp_rep.group_port = groups[i].port;
+            rep_msg.data.findgrp_rep.group_addr = groups[i].addr;
+
+            struct sockaddr_in addr;
+            addr.sin_family = AF_INET;
+            addr.sin_port = msg->src_port;
+            addr.sin_addr = msg->src_addr;
+            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
             return;
         }    
     }
 
-    char hostname[100];
-    struct hostent * host_entry;
-    struct in_addr host_addr;
+}
 
-    gethostname(hostname, 100);
-    host_entry = gethostbyname(hostname);
-    host_addr = *((struct in_addr*) host_entry->h_addr_list[0]);
+void find_join_group(char group_name[30], int joinflag) {
+    // joinflag = 0 -> FINDGRP_REQ
+    // joinflag = 1 -> JOIN_GRP
     
-    struct multicast_msg msg;
+    for (size_t i = 0; i < n_groups; ++i) {
+        if (strcmp(group_name, groups[i].name) == 0) {
+            char ip[40];
+            inet_ntop(AF_INET, &(groups[i].addr), ip, 40);
+            printf(">> Group '%s' found on %s:%d and you are a member\n\n", group_name, ip, groups[i].port);
+            return;
+        }    
+    }
+    
+    struct multicast_msg msg = {0};
     msg.type = MT_FINDGRP_REQ;
     msg.src_addr = host_addr;
-    msg.src_port = PORT;
-    strcpy(msg.findgrp_req.group_name, group_name);
-
+    strcpy(msg.data.findgrp_req.group_name, group_name);
     
+    
+    struct sockaddr_in addr; socklen_t addr_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    int tmp_sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (bind(tmp_sock_fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
+        printf("! Error in bind. Try again...\n\n");
+        close(tmp_sock_fd);
+        return;
+    }
+    getsockname(tmp_sock_fd, (struct sockaddr *) &addr, &addr_len);
+    
+    // Network order
+    msg.src_port = addr.sin_port;
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+
+    int tmp_epoll_fd = epoll_create1(0);
+    struct epoll_event tmp_event;
+    tmp_event.events = EPOLLIN;
+    tmp_event.data.fd = tmp_sock_fd;
+    epoll_ctl(tmp_epoll_fd, EPOLL_CTL_ADD, tmp_sock_fd, &tmp_event);
+
+    // Wait for 3 seconds MAX
+    int tmp_n_events = epoll_wait(tmp_epoll_fd, &tmp_event, 1, 3);
+    if (tmp_n_events == 0) {
+        printf(">> Group '%s' not found\n\n", group_name);
+    }
+    else if (tmp_n_events > 0) {
+        recvfrom(tmp_sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, &addr_len);
+        char ip[40];
+        inet_ntop(AF_INET, &(msg.data.findgrp_rep.group_addr), ip, 40);
+        printf(">> Group '%s' found on %s:%d and you are not a member\n\n", msg.data.findgrp_rep.group_name, ip, msg.data.findgrp_rep.group_port);
+        if (joinflag)
+            create_group(msg.data.findgrp_rep.group_name, ip, msg.data.findgrp_rep.group_port, 1);
+    }
+    else {
+        printf("! Error in epoll_wait. Try again...\n\n");
+    }
+
+    close(tmp_epoll_fd);
+    close(tmp_sock_fd);
+}
+
+void send_group_mssg(char group_name[30], char mssg[500]) {
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    for (int i = 0; i < n_groups; ++i) {
+        if (strcmp(group_name, groups[i].name) == 0) {
+            struct multicast_msg rep_msg = {0};
+            rep_msg.type = MT_TEXT;
+            rep_msg.src_addr = host_addr;
+            rep_msg.src_port = PORT;
+            strcpy(rep_msg.data.text.text, mssg);
+
+            addr.sin_port = htons(groups[i].port);
+            addr.sin_addr = groups[i].addr;
+            sendto(sock_fd, &rep_msg, sizeof(rep_msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            return;
+        }
+    }
+}
+
+void receive_text(int fd, struct multicast_msg * msg) {
+    for (int i = 0; i < n_groups; ++i) {
+        if (groups[i].fd == fd) {
+            char ip[40];
+            inet_ntop(AF_INET, &(groups[i].addr), ip, 40);
+            printf(">> Received from %s:%d in group '%s'\n>  %s\n", ip, groups[i].port, groups[i].name, msg->data.text.text);
+            return;
+        }
+    }
+}
+
+void request_file(char filename[30]) {
+    for (int i = 0; i < n_local_files; ++i) {
+        if (strcmp(local_files[i], filename) == 0) {
+            printf("! File '%s' already exists. Try again with different file name...\n\n", filename);
+            return;
+        }
+    }
+    
+    struct sockaddr_in addr = {0}; socklen_t addr_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(0);
+    
+    int tmp_sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (bind(tmp_sock_fd, (struct sockaddr *) &addr, sizeof(addr)) == -1) {
+        printf("! Error in bind. Try again...\n\n");
+        close(tmp_sock_fd);
+        return;
+    }
+    getsockname(tmp_sock_fd, (struct sockaddr *) &addr, &addr_len);
+    
+    if (listen(tmp_sock_fd, 1) == -1) {
+        printf("! Error in listen. Try again...\n\n");
+        close(tmp_sock_fd);
+        return;
+    }
+
+    struct multicast_msg msg = {0};
+    for (int i = 0; i < n_groups; ++i) {
+        msg.type = MT_FILE_REQ;
+        msg.src_addr = host_addr;
+        msg.src_port = ntohs(addr.sin_port);
+        strcpy(msg.data.file_req.file_name, filename);
+
+        addr.sin_port = htons(groups[i].port);
+        addr.sin_addr = groups[i].addr;
+        sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+    }
+
+    int conn_fd = accept(tmp_sock_fd, &addr, &addr_len);
+
+    FILE * fp = fopen(filename, "w");
+
+    char buf[500];
+    size_t n_bytes = 0;
+    while (n_bytes = recv(conn_fd, buf, 500, 0)) {
+
+    }
+    // // Network order
+    // msg.src_port = addr.sin_port;
+
+    // addr.sin_family = AF_INET;
+    // addr.sin_port = htons(PORT);
+    // addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+
+    // sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+
+    // int tmp_epoll_fd = epoll_create1(0);
+    // struct epoll_event tmp_event;
+    // tmp_event.events = EPOLLIN;
+    // tmp_event.data.fd = tmp_sock_fd;
+    // epoll_ctl(tmp_epoll_fd, EPOLL_CTL_ADD, tmp_sock_fd, &tmp_event);
+
+    // // Wait for 3 seconds MAX
+    // int tmp_n_events = epoll_wait(tmp_epoll_fd, &tmp_event, 1, 3);
+    // if (tmp_n_events == 0) {
+    //     printf(">> Group '%s' not found\n\n", group_name);
+    // }
+    // else if (tmp_n_events > 0) {
+    //     recvfrom(tmp_sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, &addr_len);
+    //     char ip[40];
+    //     inet_ntop(AF_INET, &(msg.data.findgrp_rep.group_addr), ip, 40);
+    //     printf(">> Group '%s' found on %s:%d and you are not a member\n\n", msg.data.findgrp_rep.group_name, ip, msg.data.findgrp_rep.port);
+    // }
+    // else {
+    //     printf("! Error in epoll_wait. Exiting...\n\n");
+    // }
+
+    close(conn_fd);
+    close(tmp_sock_fd);
+}
+
+void reply_file(int fd, struct multicast_msg * msg) {
+    
+}
+
+void create_poll(char group_name[30], char question[100], int n_options, char options[10][100]) {
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    for (int i = 0; i < n_groups; ++i) {
+        if (strcmp(group_name, groups[i].name) == 0) {
+            struct multicast_msg msg = {0};
+            msg.type = MT_POLL_REQ;
+            msg.src_addr = host_addr;
+            msg.src_port = PORT;
+            strcpy(msg.data.poll_req.group_name, group_name);
+            strcpy(msg.data.poll_req.question, question);
+            msg.data.poll_req.n_options = n_options;
+
+            for(int j = 0; j < n_options; j++)
+                strcpy(msg.data.poll_req.options[j], options[j]);
+
+            addr.sin_port = htons(groups[i].port);
+            addr.sin_addr = groups[i].addr;
+            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            return;
+        }
+    }
+}
+
+void get_list_files(char group_name[30]) {
+    share_filenames(false, group_name);
+}
+
+void list_files() {
 
 }
 
-void handle_msg() {
+void reply_poll(struct multicast_msg * msg) {
+
+    int sel_option = 0;
+    printf(">> Poll received on group '%s'\n", (msg->data).poll_req.group_name);
+    printf(">  Question:- %s\n", (msg->data).poll_req.question);
+    for (int i = 1; i <= (msg->data).poll_req.n_options; ++i) {
+        printf(">  Option %d: %s\n", i, (msg->data).poll_req.options[i]);
+    }
+    printf("> Enter your choice (option number): ");
+    fflush(stdout);
+    scanf("%d\n", &sel_option);
+    printf("\n");
+    
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    for (int i = 0; i < n_groups; ++i) {
+        if (strcmp(msg -> data.poll_req.group_name, groups[i].name) == 0) {
+            struct multicast_msg msg = {0};
+            msg.type = MT_POLL_REP;
+            msg.src_addr = host_addr;
+            msg.src_port = PORT;
+            msg.data.poll_rep.option = sel_option;
+
+            addr.sin_port = htons(groups[i].port);
+            addr.sin_addr = groups[i].addr;
+            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            return;
+        }
+    }
+}
+
+void forward_filelists(int fd, struct multicast_msg * msg) {
+
+}
+
+void handle_multicast_msg(int fd) {
+    // fd is multicast group socket fd
     /*
      Receive and respond
-        + Find group
-        + Request file
-        + Poll
+        + Receive text
+        + Request file rep
+        + Poll rep
+        - List files rep
     */
+    struct sockaddr_in addr = {0}; socklen_t addr_len;
+    struct multicast_msg msg = {0};
+    
+    recvfrom(fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, &addr_len);
+    
+    if (msg.type == MT_TEXT) {
+        receive_text(fd, &msg);
+    }
+    else if (msg.type == MT_FILE_REQ) {
+        reply_file(fd, &msg);
+    }
+    else if (msg.type == MT_POLL_REQ) {
+        reply_poll(&msg);
+    }
+    else if (msg.type == MT_FILELIST_REP) {
+        // forward to all other non-visited groups
+        forward_filelists(fd, &msg);
+    }
+}
+
+void handle_broadcast_msg() {
+    /*
+     Receive and respond
+        + Find group rep
+    */
+    struct sockaddr_in addr = {0}; socklen_t addr_len;
+    struct multicast_msg msg = {0};
+    
+    recvfrom(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, &addr_len);
+    
+    if (msg.type == MT_FINDGRP_REQ) {
+        find_group_rep(&msg);
+    }
 }
 
 bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
     /*
      Parse and Call corresponding command functions
+        + Send text
         + Create group
-        + Find group
+        + Find group req
         + List group
-        + List file 
-        + Request file
-        + Create Poll
+        + List file req
+        + Request file req
+        + Poll req
     */
         bool is_error = false;
         char * tmp_cmd = strdup(cmd_buf);
@@ -217,41 +556,38 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
             char * group_ip = strtok_r(NULL, " ", &saved_ptr);
             if(group_ip == NULL) 
                 return false;
-            char * group_port = strtok_r(NULL, " ", &saved_ptr);
-            if(group_port == NULL) 
+            char * group_port_str = strtok_r(NULL, " ", &saved_ptr);
+            if(group_port_str == NULL) 
                 return false;
-            create_group(group_name, group_ip, group_port);
+            in_port_t group_port = atoi(group_port_str);
+            create_group(group_name, group_ip, group_port, 0);
         }
         else if(strcmp(cmd_token, "join-group") == 0) {
             //join-group [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
-            join_group(group_name);
+            find_join_group(group_name, 1);
         }
         else if(strcmp(cmd_token, "find-group") == 0) {
             //find-group [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
-            find_group(group_name);
+            find_join_group(group_name, 0);
         }
         else if(strcmp(cmd_token, "request") == 0) {
             //request [file_name]
             char * file_name = strtok_r(NULL, " ", &saved_ptr);
             if(file_name == NULL) 
                 return false;
-            request(file_name);
-        }
-        else if(strcmp(cmd_token, "list-groups") == 0) {
-            //list-groups
-            list_groups();
+            request_file(file_name);
         }
         else if(strcmp(cmd_token, "list-files") == 0) {
             //list-files [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
-                return false;
+                list_files();
 
             list_files(group_name);
         }
@@ -294,13 +630,14 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
 }
 
 int main() {
-    sigalrm_rcvd = false;
     n_groups = 0;
+    n_local_files = 0;
+    n_remote_files = 0;
     
     struct sockaddr_in addr;
     socklen_t addr_len = sizeof(addr);
     
-    int sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    sock_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -309,16 +646,22 @@ int main() {
     if (bind(sock_fd, &addr, addr_len) == -1)
         err_exit("Error in bind. Exiting...\n");
 
-    struct sigaction sigalrm_action;
-    sigalrm_action.sa_handler = sigalrm_handler;
-    sigalrm_action.sa_flags = 0;
-    sigemptyset(&sigalrm_action.sa_mask);
-    sigaddset(&sigalrm_action.sa_mask, SIGALRM);
-    
-    sigaction(SIGALRM, &sigalrm_action, NULL);
+    char hostname[100];
+    struct hostent * host_entry;
+
+    gethostname(hostname, 100);
+    host_entry = gethostbyname(hostname);
+    host_addr = *((struct in_addr*) host_entry->h_addr_list[0]);
+
+    pid_t child_pid = fork();
+
+    if(child_pid == 0) {
+        share_filenames(true, NULL);
+        _exit(EXIT_SUCCESS);
+    }
 
     struct epoll_event event, trig_events[50];
-    int epoll_fd = epoll_create1(0);
+    epoll_fd = epoll_create1(0);
     
     event.events = EPOLLIN;
     event.data.fd = STDIN_FILENO;
@@ -328,14 +671,9 @@ int main() {
     event.data.fd = sock_fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event);
 
-    char cmd_buf[100]; size_t cmd_len;
+    char* cmd_buf = malloc(sizeof(char) * 100); size_t cmd_len;
 
     while (true) {
-
-        if(sigalrm_rcvd) {
-            share_filenames();
-            sigalrm_rcvd = false;
-        }
 
         int n_events = epoll_wait(epoll_fd, trig_events, 50, -1);
         if (n_events == -1 && errno == EINTR)
@@ -350,11 +688,20 @@ int main() {
                 handle_cmd(cmd_buf, cmd_len);
             }
             else if (trig_events[i].data.fd == sock_fd) {
-                handle_msg();
+                handle_broadcast_msg();
+            }
+            else {
+                handle_multicast_msg(trig_events[i].data.fd);
             }
         }
     }
 
+    //Clean up
+    for (int i = 0; i < n_groups; ++i) {
+        close(groups[i].fd);
+    }
+    close(epoll_fd);
+    close(sock_fd);
 
     exit(EXIT_SUCCESS);
 }
