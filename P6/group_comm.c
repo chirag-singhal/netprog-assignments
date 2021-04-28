@@ -6,7 +6,6 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <signal.h>
-#include <time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
@@ -18,8 +17,11 @@
 #include <dirent.h> 
 #include <sys/stat.h>
 
-#define PORT        5000
+#define PORT        6000
+#define TEST_PORT   5000
 #define MAX_GROUPS  20
+
+// Multicast IP range : 224.0.0.0 - 239.255.255.255
 
 // STRUCTURES
 struct group_info {
@@ -170,26 +172,40 @@ void share_filenames(bool is_infinite, char group_name[30]) {
 void create_group(char group_name[30], char group_ip[40], in_port_t group_port, int joinflag) {
     // joinflag = 0 -> "Create"
     // joinflag = 1 -> "Join"
-    
-    if (n_groups >= MAX_GROUPS) {
+
+printf("CDSA\n");
+        if (n_groups >= MAX_GROUPS) {
         printf("! Cannot %s group. Maximum group limit already reached...\n", (joinflag)?"Join":"Create");
         return;
     }
 
-    struct sockaddr_in addr;
+    struct sockaddr_in addr = {0};
     int fd;
-    if (inet_pton(AF_INET, group_ip, &(addr.sin_addr)) == -1) {
-        printf("! Group IP '%s' is invalid. Try again...\n\n", group_ip);
+    fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    
+    int reuse = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
+        perror("Error in setsockopt. Try again...\n\n");
+        close(fd);
         return;
     }
-    fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(group_port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) == -1 && errno == EADDRINUSE) {
         printf("! Port %d is already in use. Try again with different port...\n\n", group_port);
         close(fd);
         return;
     }
 
+    if (inet_pton(AF_INET, group_ip, &(addr.sin_addr)) == -1) {
+        printf("! Group IP '%s' is invalid. Try again...\n\n", group_ip);
+        close(fd);
+        return;
+    }
     struct ip_mreq mreq = {0};
+    mreq.imr_multiaddr = addr.sin_addr;
     mreq.imr_interface.s_addr = htonl(INADDR_ANY);
 
     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
@@ -197,7 +213,7 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
         close(fd);
         return;
     }
-    u_char loop = 0;
+    int loop = 0;
     if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
         perror("Error in setsockopt. Try again...\n\n");
         close(fd);
@@ -277,7 +293,7 @@ void find_join_group(char group_name[30], int joinflag) {
     msg.src_port = addr.sin_port;
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(TEST_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
     sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
@@ -289,7 +305,7 @@ void find_join_group(char group_name[30], int joinflag) {
     epoll_ctl(tmp_epoll_fd, EPOLL_CTL_ADD, tmp_sock_fd, &tmp_event);
 
     // Wait for 3 seconds MAX
-    int tmp_n_events = epoll_wait(tmp_epoll_fd, &tmp_event, 1, 3);
+    int tmp_n_events = epoll_wait(tmp_epoll_fd, &tmp_event, 1, 3000);
     if (tmp_n_events == 0) {
         printf(">> Group '%s' not found\n\n", group_name);
     }
@@ -585,6 +601,7 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
         + Request file req
         + Poll req
     */
+printf("A\n");
         bool is_error = false;
         char * tmp_cmd = strdup(cmd_buf);
         char* saved_ptr;
@@ -630,8 +647,8 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 list_files();
-
-            list_files(group_name);
+            else
+                list_files(group_name);
         }
         else if(strcmp(cmd_token, "send") == 0) {
             //send [group_name] [mssg]
@@ -668,6 +685,7 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
             }
             create_poll(group_name, question, n_options, options);
         }
+printf("AA\n");
         return true;
 }
 
@@ -687,6 +705,12 @@ int main() {
     
     if (bind(sock_fd, &addr, addr_len) == -1)
         err_exit("Error in bind. Exiting...\n");
+
+    int loop = 0;
+    if (setsockopt(sock_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
+        close(sock_fd);
+        err_exit("Error in setsockopt. Try again...\n\n");
+    }
 
     char hostname[100];
     struct hostent * host_entry;
@@ -713,8 +737,9 @@ int main() {
     event.data.fd = sock_fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event);
 
-    char* cmd_buf = malloc(sizeof(char) * 100); size_t cmd_len;
-
+    printf("Application running...\n\n\n");
+    
+    char * cmd_buf = malloc(sizeof(char) * 100); size_t cmd_len;
     while (true) {
 
         int n_events = epoll_wait(epoll_fd, trig_events, 50, -1);
@@ -723,10 +748,20 @@ int main() {
 
         for (int i = 0; i < n_events; ++i) {
             if (trig_events[i].data.fd == STDIN_FILENO) {
-                getline(&cmd_buf, &cmd_len, stdin);
-                if (cmd_buf[cmd_len - 1] == '\n')
-                    cmd_buf[cmd_len - 1] = '\0';
+printf("B\n");
+                int i = 0;
+                while(read(STDIN_FILENO, cmd_buf+i, 1) > 0) {
+                    if (cmd_buf[i] == '\n') {
+                        cmd_buf[i] = '\0';
+                        break;
+                    }
+                    ++i;
+                }
+                // getline(&cmd_buf, &cmd_len, stdin);
+                // if (cmd_buf[cmd_len - 1] == '\n')
+                //     cmd_buf[cmd_len - 1] = '\0';
 
+printf("BB %s\n", cmd_buf);
                 handle_cmd(cmd_buf, cmd_len);
             }
             else if (trig_events[i].data.fd == sock_fd) {
@@ -742,6 +777,8 @@ int main() {
     for (int i = 0; i < n_groups; ++i) {
         close(groups[i].fd);
     }
+
+    free(cmd_buf);
     close(epoll_fd);
     close(sock_fd);
 
