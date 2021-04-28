@@ -162,8 +162,8 @@ void find_group(char group_name[30]) {
     
     for (size_t i = 0; i < n_groups; ++i) {
         if (strcmp(group_name, groups[i].name) == 0) {
-            printf(">> Group '%s' found on %s:%d\n\n", group_name, groups[i].addr, groups[i].port);
-            break;
+            printf(">> Group '%s' found locally on %s:%d\n\n", group_name, groups[i].addr, groups[i].port);
+            return;
         }    
     }
 
@@ -180,6 +180,8 @@ void find_group(char group_name[30]) {
     msg.src_addr = host_addr;
     msg.src_port = PORT;
     strcpy(msg.findgrp_req.group_name, group_name);
+
+    
 
 }
 
@@ -205,9 +207,9 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
         bool is_error = false;
         char * tmp_cmd = strdup(cmd_buf);
         char* saved_ptr;
-        char* token = strtok_r(tmp_cmd, " ", &saved_ptr);
+        char* cmd_token = strtok_r(tmp_cmd, " ", &saved_ptr);
         
-        if(strcmp(token, "create-group") == 0) {
+        if(strcmp(cmd_token, "create-group") == 0) {
             //create-group [group_name] [group_ip] [group_port]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
@@ -220,32 +222,32 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
                 return false;
             create_group(group_name, group_ip, group_port);
         }
-        else if(strcmp(token, "join-group") == 0) {
+        else if(strcmp(cmd_token, "join-group") == 0) {
             //join-group [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
             join_group(group_name);
         }
-        else if(strcmp(token, "find-group") == 0) {
+        else if(strcmp(cmd_token, "find-group") == 0) {
             //find-group [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
             find_group(group_name);
         }
-        else if(strcmp(token, "request") == 0) {
+        else if(strcmp(cmd_token, "request") == 0) {
             //request [file_name]
             char * file_name = strtok_r(NULL, " ", &saved_ptr);
             if(file_name == NULL) 
                 return false;
             request(file_name);
         }
-        else if(strcmp(token, "list-groups") == 0) {
+        else if(strcmp(cmd_token, "list-groups") == 0) {
             //list-groups
             list_groups();
         }
-        else if(strcmp(token, "list-files") == 0) {
+        else if(strcmp(cmd_token, "list-files") == 0) {
             //list-files [group_name]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
@@ -253,24 +255,24 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
 
             list_files(group_name);
         }
-        else if(strcmp(token, "send") == 0) {
+        else if(strcmp(cmd_token, "send") == 0) {
             //send [group_name] [mssg]
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
 
-            char *mssg = token + strlen(group_name) + 1;
+            char *mssg = group_name + strlen(group_name) + 1;
             if(*mssg == '\0') 
                 return false;
-            send_group_mssg(token, mssg);
+            send_group_mssg(group_name, mssg);
         }
-        else if(strcmp(token, "create-poll") == 0) {
+        else if(strcmp(cmd_token, "create-poll") == 0) {
             //create-poll "[question]" n_options "[option1]" "[option2]" "[option3]"
             char * group_name = strtok_r(NULL, " ", &saved_ptr);
             if(group_name == NULL) 
                 return false;
-            token = strtok_r(NULL, "\"", &saved_ptr);
             char * question = strtok_r(NULL, "\"", &saved_ptr);
+            question = strtok_r(NULL, "\"", &saved_ptr);
             if(question == NULL) 
                 return false;
 
@@ -280,8 +282,8 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
             int n_options = atoi(n_options_str);
             char options[10][100];
             for(int i = 0; i < n_options; i++) {
-                token = strtok_r(NULL, "\"", &saved_ptr);
                 char * option = strtok_r(NULL, "\"", &saved_ptr);
+                option = strtok_r(NULL, "\"", &saved_ptr);
                 if(option == NULL) 
                     return false;
                 strcpy(options[i], option);
