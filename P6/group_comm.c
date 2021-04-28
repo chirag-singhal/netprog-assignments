@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <errno.h>
 #include <dirent.h> 
@@ -173,7 +174,6 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
     // joinflag = 0 -> "Create"
     // joinflag = 1 -> "Join"
 
-printf("CDSA\n");
         if (n_groups >= MAX_GROUPS) {
         printf("! Cannot %s group. Maximum group limit already reached...\n", (joinflag)?"Join":"Create");
         return;
@@ -250,7 +250,7 @@ void find_group_rep(struct multicast_msg * msg) {
             addr.sin_family = AF_INET;
             addr.sin_port = msg->src_port;
             addr.sin_addr = msg->src_addr;
-            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            sendto(sock_fd, &rep_msg, sizeof(rep_msg), 0, (struct sockaddr *) &addr, sizeof(addr));
             return;
         }    
     }
@@ -338,7 +338,8 @@ void send_group_mssg(char group_name[30], char mssg[500]) {
 
             addr.sin_port = htons(groups[i].port);
             addr.sin_addr = groups[i].addr;
-            sendto(sock_fd, &rep_msg, sizeof(rep_msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            if (sendto(sock_fd, &rep_msg, sizeof(rep_msg), 0, (struct sockaddr *) &addr, sizeof(addr)) == -1)
+                perror("! Error in sendto. Try again...\n\n");
             return;
         }
     }
@@ -742,7 +743,7 @@ int main() {
     event.data.fd = sock_fd;
     epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sock_fd, &event);
 
-    printf("Application running...\n\n\n");
+    printf("Application running on port %d...\n\n\n", PORT);
     
     char * cmd_buf = malloc(sizeof(char) * 100); size_t cmd_len;
     while (true) {
@@ -762,6 +763,8 @@ printf("B\n");
                     }
                     ++i;
                 }
+                if (i == 0)
+                    continue;
                 // getline(&cmd_buf, &cmd_len, stdin);
                 // if (cmd_buf[cmd_len - 1] == '\n')
                 //     cmd_buf[cmd_len - 1] = '\0';
@@ -770,9 +773,11 @@ printf("BB %s\n", cmd_buf);
                 handle_cmd(cmd_buf, cmd_len);
             }
             else if (trig_events[i].data.fd == sock_fd) {
+printf("C\n");
                 handle_broadcast_msg();
             }
             else {
+printf("D\n");
                 handle_multicast_msg(trig_events[i].data.fd);
             }
         }
