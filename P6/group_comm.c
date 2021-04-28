@@ -109,6 +109,10 @@ void err_exit(const char * err_msg) {
     exit(EXIT_FAILURE);
 }
 
+void handle_sigalarm(int sig) {
+    return;
+}
+
 int max(int a, int b) {
     return (a > b) ? a : b;
 }
@@ -123,7 +127,7 @@ void share_filenames(bool is_infinite, char group_name[30]) {
         DIR *files;
         struct multicast_msg msg = {0};
         struct dirent *dir;
-        files = opendir(".");
+        files = opendir("./data");
         int n_files = 0;
 
         if (files != NULL) {
@@ -374,51 +378,70 @@ void request_file(char filename[30]) {
         sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
     }
 
+    sigaction(SIGALRM, &(struct sigaction){handle_sigalarm}, NULL);
+    alarm(5);
     int conn_fd = accept(tmp_sock_fd, &addr, &addr_len);
+    if (conn_fd == -1 && errno == EINTR) {
+        printf(">> Requested file '%s' not found in any group\n\n", filename);
+        close(tmp_sock_fd);
+        return;
+    }
+    sigaction(SIGALRM, &(struct sigaction){SIG_DFL}, NULL);
 
-    FILE * fp = fopen(filename, "w");
+    char filename_path[50] = "";
+    strcat(filename_path, "data/");
+    strcat(filename_path, filename);
+
+    FILE * fp = fopen(filename_path, "w");
 
     char buf[500];
     size_t n_bytes = 0;
     while (n_bytes = recv(conn_fd, buf, 500, 0)) {
-
+        fwrite(buf, 1, n_bytes, fp);
     }
-    // // Network order
-    // msg.src_port = addr.sin_port;
 
-    // addr.sin_family = AF_INET;
-    // addr.sin_port = htons(PORT);
-    // addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    char ip[40];
+    inet_ntop(AF_INET, &(addr.sin_addr), ip, 40);
 
-    // sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+    strcpy(local_files[n_local_files++], filename);
+    printf(">> Received file '%s' from %s:%d\n\n", filename, ip, ntohs(addr.sin_port));
 
-    // int tmp_epoll_fd = epoll_create1(0);
-    // struct epoll_event tmp_event;
-    // tmp_event.events = EPOLLIN;
-    // tmp_event.data.fd = tmp_sock_fd;
-    // epoll_ctl(tmp_epoll_fd, EPOLL_CTL_ADD, tmp_sock_fd, &tmp_event);
-
-    // // Wait for 3 seconds MAX
-    // int tmp_n_events = epoll_wait(tmp_epoll_fd, &tmp_event, 1, 3);
-    // if (tmp_n_events == 0) {
-    //     printf(">> Group '%s' not found\n\n", group_name);
-    // }
-    // else if (tmp_n_events > 0) {
-    //     recvfrom(tmp_sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, &addr_len);
-    //     char ip[40];
-    //     inet_ntop(AF_INET, &(msg.data.findgrp_rep.group_addr), ip, 40);
-    //     printf(">> Group '%s' found on %s:%d and you are not a member\n\n", msg.data.findgrp_rep.group_name, ip, msg.data.findgrp_rep.port);
-    // }
-    // else {
-    //     printf("! Error in epoll_wait. Exiting...\n\n");
-    // }
-
+    fclose(fp);
     close(conn_fd);
     close(tmp_sock_fd);
 }
 
 void reply_file(int fd, struct multicast_msg * msg) {
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_addr = msg->src_addr;
+    addr.sin_port = htons(msg->src_port);
     
+    for (int i = 0; i < n_local_files; ++i) {
+        if (strcmp(local_files[i], (msg->data).file_req.file_name) == 0) {
+            int tmp_sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (connect(tmp_sock_fd, &addr, sizeof(addr)) == -1) {
+                close(tmp_sock_fd);
+                return;
+            }
+
+            char filename_path[50] = "";
+            strcat(filename_path, "data/");
+            strcat(filename_path, (msg->data).file_req.file_name);
+
+            FILE * fp = fopen((msg->data).file_req.file_name, "r");
+            
+            char buf[500];
+            size_t n_bytes = 0;
+            while (n_bytes = fread(buf, 1, 500, fp)) {
+                send(tmp_sock_fd, buf, n_bytes, 0);
+            }
+            
+            fclose(fp);
+            close(tmp_sock_fd);
+            return;
+        }
+    }
 }
 
 void create_poll(char group_name[30], char question[100], int n_options, char options[10][100]) {
@@ -450,7 +473,15 @@ void get_list_files(char group_name[30]) {
 }
 
 void list_files() {
-
+    printf(">> Local files (%ld) :\n", n_local_files);
+    for (size_t i = 0; i < n_local_files; ++i) {
+        printf(">  \t\t%s\n", local_files[i]);
+    }
+    printf(">> Remote files (%ld) :\n", n_remote_files);
+    for (size_t i = 0; i < n_remote_files; ++i) {
+        printf(">  \t\t%s\n", remote_files[i]);
+    }
+    printf("\n");
 }
 
 void reply_poll(struct multicast_msg * msg) {
@@ -484,9 +515,20 @@ void reply_poll(struct multicast_msg * msg) {
     }
 }
 
-void forward_filelists(int fd, struct multicast_msg * msg) {
-
+void update_filelists(int fd, struct multicast_msg * msg) {
+    for(int i = 0; i < msg -> data.filelist_rep.n_files; i++) {
+        bool found = false;
+        for(int j = 0; j < n_remote_files; j++) {
+            if(remote_files[j] == msg  -> data.filelist_rep.files[i]) {
+                found = true;
+                break;
+            }
+        }
+        if(!found)
+            strcpy(remote_files[n_remote_files++], msg -> data.filelist_rep.files[i]);
+    }
 }
+
 
 void handle_multicast_msg(int fd) {
     // fd is multicast group socket fd
@@ -513,7 +555,7 @@ void handle_multicast_msg(int fd) {
     }
     else if (msg.type == MT_FILELIST_REP) {
         // forward to all other non-visited groups
-        forward_filelists(fd, &msg);
+        update_filelists(fd, &msg);
     }
 }
 
