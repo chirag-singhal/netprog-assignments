@@ -206,13 +206,31 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
     }
     struct ip_mreq mreq = {0};
     mreq.imr_multiaddr = addr.sin_addr;
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
 
-    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
-        perror("Error in setsockopt. Try again...\n\n");
-        close(fd);
-        return;
+// BIND TO ALL INTERFACES
+    struct ifaddrs *ifap, *ifa;
+    struct sockaddr_in *sa;
+    getifaddrs (&ifap);
+    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr && ifa->ifa_addr->sa_family==AF_INET) {
+            sa = (struct sockaddr_in *) ifa->ifa_addr;
+            mreq.imr_interface = sa->sin_addr;
+            if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
+                perror("Error in setsockopt. Try again...\n\n");
+                close(fd);
+                return;
+            }
+        }
     }
+    freeifaddrs(ifap);
+//
+
+    // mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    // if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
+    //     perror("Error in setsockopt. Try again...\n\n");
+    //     close(fd);
+    //     return;
+    // }
     int loop = 0;
     if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
         perror("Error in setsockopt. Try again...\n\n");
