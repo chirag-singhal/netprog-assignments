@@ -12,6 +12,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <ifaddrs.h>
 #include <netdb.h>
 #include <errno.h>
 #include <dirent.h> 
@@ -173,7 +174,6 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
     // joinflag = 0 -> "Create"
     // joinflag = 1 -> "Join"
 
-printf("CDSA\n");
         if (n_groups >= MAX_GROUPS) {
         printf("! Cannot %s group. Maximum group limit already reached...\n", (joinflag)?"Join":"Create");
         return;
