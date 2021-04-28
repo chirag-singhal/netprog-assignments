@@ -711,6 +711,11 @@ int main() {
         close(sock_fd);
         err_exit("Error in setsockopt. Try again...\n\n");
     }
+    int bcast = 1;
+    if (setsockopt(sock_fd, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast)) == -1) {
+        close(sock_fd);
+        err_exit("Error in setsockopt. Try again...\n\n");
+    }
 
     char hostname[100];
     struct hostent * host_entry;
