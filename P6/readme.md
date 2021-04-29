@@ -1,27 +1,17 @@
-# P3 Group Chat Management System
+# P3 Group Communication among System
 
-This exercise develops a group chat system which allows users to create groups, list all groups on the server, join groups, send private and group messages and receive messages in online as well as offline mode. The chat system also implements an option which can be set for a group where users who join a group after `<t>` seconds from the time of message creation also receive it.
-
-# Design
-
-# Server
-
-The server starts before all other clients and has its own message queue. The server coordinates between all the clients. The server receives the message from the queue and based on the type of message, it updates its internal state and sends responses to appropriate clients.
-
-
-# Client
-
-Every client is uniquely identified by their username which is entered as soon as the client program is launched. The client name cannot be `server`. The client has two threads running. One is a prompting thread which prompts and asks for user input. On receiving the command, it parses and sends the appropriate message to the server message queue. Another is a receiving message thread which reads messages from the client message queue sent by the server and then prints the messages on the terminal.
+This exercise develops a P2P group communication among system which allows users to create groups, join groups, send group messages and receive messages, request files and create polls in groups. The group communication among system uses IP multicasting and broadcasting for the features. There is n central server to store data. 
 
 
 # Usage
 
 # Creating and Joining group
 
-`create` command is used to create a group and join command is used to join a group. The user who creates the group is already a member of the group.
+`create` command is used to create a group and `join-group` command is used to join a group. The user who creates the group is already a member of the group. `find-group` command can be used to search a group-name exists or not.
 
     create <group_name> <group_ip> <group_port>
-    join <group_name> 
+    join-group <group_name> 
+    find-group <group_name> 
 
 
 
@@ -39,13 +29,22 @@ Every client is uniquely identified by their username which is entered as soon a
 
 # List Files
 
+`list-files` command can be used to print the local and remote files and can also be used to update the available list of files of the users of a particular group when group name is also provided in the command.
 
+    list-files
+    list-files <group_name>
+
+# Creating Polls
+
+`create-poll` can be used to create a poll in a group which can have a maximum of 10 options to choose from. Question and options must be enclosed in `""`.
+
+    create-poll "<question>" <n_options> "<option1>" "<option2>" "<option3>"
 
 
 # How to Run:
 
-The following command is run on the machine. It compiles and runs the executable.
+The following command is used to run on the machine. It compiles and runs the executable.
     
-    make run_server
+    make run
 
-To exit the process you can press Ctrl + C, regardless of client or server. 
+To exit the process you can press Ctrl + C. 
