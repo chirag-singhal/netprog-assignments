@@ -18,9 +18,9 @@
 #include <dirent.h> 
 #include <sys/stat.h>
 
-#define PORT            5000
-#define TEST_PORT       6000
-#define TEST_LOOPBACK   0
+#define PORT            6000
+#define TEST_PORT       5000
+#define TEST_LOOPBACK   1
 #define MAX_GROUPS      20
 
 // Multicast IP range : 224.0.0.0 - 239.255.255.255
@@ -109,6 +109,7 @@ char local_files[100][30]; size_t n_local_files;
 char remote_files[MAX_GROUPS * 100][30]; size_t n_remote_files;
 
 
+// FUNCTIONS
 void err_exit(const char * err_msg) {
     perror(err_msg);
     exit(EXIT_FAILURE);
@@ -127,8 +128,8 @@ int min(int a, int b) {
 }
 
 void share_filenames(bool is_infinite, char group_name[30]) {
-
     while(true) {
+printf("THIS function is called\n\n");
         DIR *files;
         struct multicast_msg msg = {0};
         struct dirent *dir;
@@ -170,6 +171,7 @@ void share_filenames(bool is_infinite, char group_name[30]) {
         }
         if(!is_infinite) 
             return;
+printf("This func ended!\n");
         sleep(60);
     }
 }
@@ -319,7 +321,7 @@ void find_join_group(char group_name[30], int joinflag) {
     msg.src_port = addr.sin_port;
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(TEST_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
     sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
