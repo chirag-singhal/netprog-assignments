@@ -18,9 +18,10 @@
 #include <dirent.h> 
 #include <sys/stat.h>
 
-#define PORT        6000
-#define TEST_PORT   5000
-#define MAX_GROUPS  20
+#define PORT            5000
+#define TEST_PORT       6000
+#define TEST_LOOPBACK   0
+#define MAX_GROUPS      20
 
 // Multicast IP range : 224.0.0.0 - 239.255.255.255
 
@@ -82,6 +83,7 @@ struct poll_req_data {
 
 struct poll_rep_data {
     int                     option;
+    char                    option_str[100];
 };
 
 struct multicast_msg {
@@ -138,13 +140,15 @@ void share_filenames(bool is_infinite, char group_name[30]) {
                 struct stat eStat;
                 stat(dir -> d_name, &eStat);
                 if(!S_ISDIR(eStat.st_mode)) {
-                    strcpy(local_files[n_files], dir -> d_name); 
+                    strcpy(local_files[n_files], dir -> d_name);
                     strcpy(msg.data.filelist_rep.files[n_files++], dir -> d_name); 
                 }
             }
             closedir(files);
         }
         msg.data.filelist_rep.n_files = n_files;
+
+        n_local_files = n_files;
 
         for(int i = 0; i < n_groups; i++) 
             strcpy(msg.data.filelist_rep.visited_grps[i], groups[i].name);
@@ -185,7 +189,7 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
     
     int reuse = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) == -1) {
-        perror("Error in setsockopt. Try again...\n\n");
+        perror("! Error in setsockopt. Try again...\n\n");
         close(fd);
         return;
     }
@@ -198,6 +202,11 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
         close(fd);
         return;
     }
+    int bcast = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast)) == -1) {
+        close(fd);
+        err_exit("! Error in setsockopt. Try again...\n\n");
+    }
 
     if (inet_pton(AF_INET, group_ip, &(addr.sin_addr)) == -1) {
         printf("! Group IP '%s' is invalid. Try again...\n\n", group_ip);
@@ -207,33 +216,32 @@ void create_group(char group_name[30], char group_ip[40], in_port_t group_port, 
     struct ip_mreq mreq = {0};
     mreq.imr_multiaddr = addr.sin_addr;
 
-// BIND TO ALL INTERFACES
-    struct ifaddrs *ifap, *ifa;
-    struct sockaddr_in *sa;
-    getifaddrs (&ifap);
-    for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr && ifa->ifa_addr->sa_family==AF_INET) {
-            sa = (struct sockaddr_in *) ifa->ifa_addr;
-            mreq.imr_interface = sa->sin_addr;
-            if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
-                perror("Error in setsockopt. Try again...\n\n");
-                close(fd);
-                return;
-            }
-        }
-    }
-    freeifaddrs(ifap);
-//
-
-    // mreq.imr_interface.s_addr = htonl(INADDR_ANY);
-    // if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
-    //     perror("Error in setsockopt. Try again...\n\n");
-    //     close(fd);
-    //     return;
+    // // BIND TO ALL INTERFACES
+    // struct ifaddrs *ifap, *ifa;
+    // struct sockaddr_in *sa;
+    // getifaddrs (&ifap);
+    // for (ifa = ifap; ifa; ifa = ifa->ifa_next) {
+    //     if (ifa->ifa_addr && ifa->ifa_addr->sa_family==AF_INET) {
+    //         sa = (struct sockaddr_in *) ifa->ifa_addr;
+    //         mreq.imr_interface = sa->sin_addr;
+    //         if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
+    //             perror("! Error in setsockopt. Try again...\n\n");
+    //             close(fd);
+    //             return;
+    //         }
+    //     }
     // }
-    int loop = 0;
-    if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
+    // freeifaddrs(ifap);
+
+    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) == -1) {
         perror("Error in setsockopt. Try again...\n\n");
+        close(fd);
+        return;
+    }
+    int loop = TEST_LOOPBACK;
+    if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
+        perror("! Error in setsockopt. Try again...\n\n");
         close(fd);
         return;
     }
@@ -311,7 +319,7 @@ void find_join_group(char group_name[30], int joinflag) {
     msg.src_port = addr.sin_port;
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(TEST_PORT);
+    addr.sin_port = htons(PORT);
     addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
     sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
@@ -414,7 +422,7 @@ void request_file(char filename[30]) {
     }
 
     sigaction(SIGALRM, &(struct sigaction){handle_sigalarm}, NULL);
-    alarm(5);
+    alarm(60);
     int conn_fd = accept(tmp_sock_fd, &addr, &addr_len);
     if (conn_fd == -1 && errno == EINTR) {
         printf(">> Requested file '%s' not found in any group\n\n", filename);
@@ -492,15 +500,19 @@ void create_poll(char group_name[30], char question[100], int n_options, char op
             strcpy(msg.data.poll_req.question, question);
             msg.data.poll_req.n_options = n_options;
 
-            for(int j = 0; j < n_options; j++)
+            for(int j = 0; j < n_options; j++) {
                 strcpy(msg.data.poll_req.options[j], options[j]);
+            }
 
             addr.sin_port = htons(groups[i].port);
             addr.sin_addr = groups[i].addr;
-            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            if (sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr)) == -1)
+                perror("! Error in sendto. Try again...\n\n");
             return;
         }
     }
+
+    // Receive replies
 }
 
 void get_list_files(char group_name[30]) {
@@ -524,30 +536,40 @@ void reply_poll(struct multicast_msg * msg) {
     int sel_option = 0;
     printf(">> Poll received on group '%s'\n", (msg->data).poll_req.group_name);
     printf(">  Question:- %s\n", (msg->data).poll_req.question);
-    for (int i = 1; i <= (msg->data).poll_req.n_options; ++i) {
-        printf(">  Option %d: %s\n", i, (msg->data).poll_req.options[i]);
+    for (int i = 0; i < (msg->data).poll_req.n_options; ++i) {
+        printf(">  Option %d: %s\n", i+1, (msg->data).poll_req.options[i]);
     }
     printf("> Enter your choice (option number): ");
     fflush(stdout);
-    scanf("%d\n", &sel_option);
+    char * opt_buf = malloc(5 * sizeof(char)); size_t opt_buf_len;
+    getline(&opt_buf, &opt_buf_len, stdin);
+    sel_option = atoi(opt_buf);
     printf("\n");
-    
+    free(opt_buf);
+
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     for (int i = 0; i < n_groups; ++i) {
         if (strcmp(msg -> data.poll_req.group_name, groups[i].name) == 0) {
-            struct multicast_msg msg = {0};
-            msg.type = MT_POLL_REP;
-            msg.src_addr = host_addr;
-            msg.src_port = PORT;
-            msg.data.poll_rep.option = sel_option;
+            struct multicast_msg rep_msg = {0};
+            rep_msg.type = MT_POLL_REP;
+            rep_msg.src_addr = host_addr;
+            rep_msg.src_port = PORT;
+            rep_msg.data.poll_rep.option = sel_option;
+            strcpy(rep_msg.data.poll_rep.option_str, (msg->data).poll_req.options[sel_option-1]);
 
             addr.sin_port = htons(groups[i].port);
             addr.sin_addr = groups[i].addr;
-            sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
+            sendto(sock_fd, &rep_msg, sizeof(rep_msg), 0, (struct sockaddr *) &addr, sizeof(addr));
             return;
         }
     }
+}
+
+void receive_poll_reply(struct multicast_msg * msg) {
+    char ip[40];
+    inet_ntop(AF_INET, &(msg->src_addr), ip, 40);
+    printf(">  (%d) \'%s\' option chosen by %s:%d\n", (msg->data).poll_rep.option, (msg->data).poll_rep.option_str, ip, msg->src_port);
 }
 
 void update_filelists(int fd, struct multicast_msg * msg) {
@@ -592,6 +614,9 @@ void handle_multicast_msg(int fd) {
         // forward to all other non-visited groups
         update_filelists(fd, &msg);
     }
+    else if (msg.type == MT_POLL_REP) {
+        receive_poll_reply(&msg);
+    }
 }
 
 void handle_broadcast_msg() {
@@ -620,7 +645,6 @@ bool handle_cmd(char cmd_buf[100], size_t cmd_len) {
         + Request file req
         + Poll req
     */
-printf("A\n");
         bool is_error = false;
         char * tmp_cmd = strdup(cmd_buf);
         char* saved_ptr;
@@ -686,7 +710,7 @@ printf("A\n");
             if(group_name == NULL) 
                 return false;
             char * question = strtok_r(NULL, "\"", &saved_ptr);
-            question = strtok_r(NULL, "\"", &saved_ptr);
+            // question = strtok_r(NULL, "\"", &saved_ptr);
             if(question == NULL) 
                 return false;
 
@@ -697,14 +721,13 @@ printf("A\n");
             char options[10][100];
             for(int i = 0; i < n_options; i++) {
                 char * option = strtok_r(NULL, "\"", &saved_ptr);
-                option = strtok_r(NULL, "\"", &saved_ptr);
                 if(option == NULL) 
                     return false;
                 strcpy(options[i], option);
+                strtok_r(NULL, "\"", &saved_ptr);
             }
             create_poll(group_name, question, n_options, options);
         }
-printf("AA\n");
         return true;
 }
 
@@ -725,11 +748,12 @@ int main() {
     if (bind(sock_fd, &addr, addr_len) == -1)
         err_exit("Error in bind. Exiting...\n");
 
-    int loop = 0;
+    int loop = TEST_LOOPBACK;
     if (setsockopt(sock_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
         close(sock_fd);
         err_exit("Error in setsockopt. Try again...\n\n");
     }
+
     int bcast = 1;
     if (setsockopt(sock_fd, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast)) == -1) {
         close(sock_fd);
@@ -772,7 +796,6 @@ int main() {
 
         for (int i = 0; i < n_events; ++i) {
             if (trig_events[i].data.fd == STDIN_FILENO) {
-printf("B\n");
                 int i = 0;
                 while(read(STDIN_FILENO, cmd_buf+i, 1) > 0) {
                     if (cmd_buf[i] == '\n') {
@@ -787,15 +810,12 @@ printf("B\n");
                 // if (cmd_buf[cmd_len - 1] == '\n')
                 //     cmd_buf[cmd_len - 1] = '\0';
 
-printf("BB %s\n", cmd_buf);
                 handle_cmd(cmd_buf, cmd_len);
             }
             else if (trig_events[i].data.fd == sock_fd) {
-printf("C\n");
                 handle_broadcast_msg();
             }
             else {
-printf("D\n");
                 handle_multicast_msg(trig_events[i].data.fd);
             }
         }
