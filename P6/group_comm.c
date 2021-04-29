@@ -22,10 +22,10 @@
 #define FOLDER          "data"
 #define PORT            5000
 #define MAX_GROUPS      20
-#define REQFILE_TIMEOUT 15       // 60
+#define REQFILE_TIMEOUT 60
 
 #define TEST_PORT       6000
-#define TEST_LOOPBACK   1
+#define TEST_LOOPBACK   0
 
 // Multicast IP range : 224.0.0.0 - 239.255.255.255
 
