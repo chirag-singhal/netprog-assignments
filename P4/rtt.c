@@ -28,6 +28,7 @@
 
 
 int n_complete, n_retries;
+int sigint_rcvd = false;
 
 struct host_info {
     bool valid;
@@ -46,6 +47,10 @@ struct pthread_args {
 void err_exit(const char * err_msg) {
     perror(err_msg);
     exit(EXIT_FAILURE);
+}
+
+void sigint_handler(int sig) {
+    sigint_rcvd = true;
 }
 
 unsigned short checksum(void *b, int len) {
@@ -221,6 +226,8 @@ void * receive_reply_func(void * args) {
     size_t num_hosts = ((struct pthread_args *)args)->num_hosts;
     int epoll_fd = ((struct pthread_args *)args)->epoll_fd;
 
+    size_t hosts_len = (num_hosts+10 < 1024)? num_hosts+10 : 1024;
+
     struct epoll_event trig_events[NUM_MAX_EVENTS];
 
     struct timespec recv_time, send_time;
@@ -231,13 +238,26 @@ void * receive_reply_func(void * args) {
 
     bool run_flag = true;
     while (run_flag) {
+        if (sigint_rcvd) {
+            printf("\nNumber of IPs pinged: %d\n", n_complete);
+            free(ip_icmp_payload);
+            sigint_rcvd = false;
+            return NULL;
+        }
+
         // Create a new thread to handle searching and updating the hosts data
         int event_count = epoll_wait(epoll_fd, trig_events, NUM_MAX_EVENTS, 10000);
         clock_gettime(CLOCK_MONOTONIC, &recv_time); // get receive time
         
         if (event_count == 0) {
             printf("\nMaximum epoll wait timeout reached!\n");
-            break;
+            for (int i = 0; i < hosts_len; ++i) {
+                if (hosts[i].valid) {
+                    hosts[i].valid = false;
+                    close(i);
+                }
+            }
+            continue;
         }
         else if (event_count == -1)
             err_exit("Error in epoll wait. Try using 'sudo'. Exiting...\n");
@@ -326,13 +346,23 @@ int main(int argc, char * argv[]) {
     // +10 is a safety limit to ensure that every 'sock_fd' is < '(num_hosts + 10)'
     // because 0 and 1 are used up by stdin and stdout
     // So, safety limit has to be atleast +2
-    struct host_info * hosts = malloc(sizeof(struct host_info) * (num_hosts + 10));
-    memset(hosts, 0, sizeof(struct host_info) * num_hosts);
+    size_t hosts_len = (num_hosts+10 < 1024)? num_hosts+10 : 1024;
+    struct host_info * hosts = malloc(sizeof(struct host_info) * hosts_len);
+    memset(hosts, 0, sizeof(struct host_info) * hosts_len);
 
     // size_t num_forks = 0;
     int epoll_fd = epoll_create1(0);
     if (epoll_fd == -1)
         err_exit("Error in epoll. Exiting...\n");
+
+    // Set up signal handler
+    struct sigaction sigint;
+    sigint.sa_handler = sigint_handler;
+    sigint.sa_flags = 0;
+    sigemptyset(&sigint.sa_mask);
+    sigaddset(&sigint.sa_mask, SIGINT);
+
+    sigaction(SIGINT, &sigint, NULL);
 
     pthread_t thread_id;
     struct pthread_args args = {hosts, num_hosts, epoll_fd};
