@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/epoll.h>
@@ -18,10 +19,13 @@
 #include <dirent.h> 
 #include <sys/stat.h>
 
+#define FOLDER          "data"
 #define PORT            5000
+#define MAX_GROUPS      20
+#define REQFILE_TIMEOUT 60
+
 #define TEST_PORT       6000
 #define TEST_LOOPBACK   0
-#define MAX_GROUPS      20
 
 // Multicast IP range : 224.0.0.0 - 239.255.255.255
 
@@ -107,8 +111,10 @@ struct group_info groups[MAX_GROUPS]; size_t n_groups;
 struct in_addr host_addr;
 char local_files[100][30]; size_t n_local_files;
 char remote_files[MAX_GROUPS * 100][30]; size_t n_remote_files;
+pthread_mutex_t lock;
 
 
+// FUNCTIONS
 void err_exit(const char * err_msg) {
     perror(err_msg);
     exit(EXIT_FAILURE);
@@ -126,29 +132,42 @@ int min(int a, int b) {
     return (a < b) ? a : b;
 }
 
-void share_filenames(bool is_infinite, char group_name[30]) {
-
+void * share_filenames(void * _group_name) {
+    bool is_infinite = (_group_name)?false:true;
+    char * group_name = (char *) _group_name;
+    
     while(true) {
         DIR *files;
         struct multicast_msg msg = {0};
         struct dirent *dir;
-        files = opendir("./data");
+        files = opendir(FOLDER);
         int n_files = 0;
 
+        pthread_mutex_lock(&lock);
         if (files != NULL) {
             while ((dir = readdir(files)) != NULL) {
+                if (strcmp(dir->d_name, ".")==0 || strcmp(dir->d_name, "..")==0)
+                    continue;
+                
                 struct stat eStat;
-                stat(dir -> d_name, &eStat);
-                if(!S_ISDIR(eStat.st_mode)) {
+                char fullpath[50] = "";
+                strcat(fullpath, FOLDER);
+                strcat(fullpath, "/");
+                strcat(fullpath, dir->d_name);
+                
+                stat(fullpath, &eStat);
+                if(S_ISREG(eStat.st_mode)) {
                     strcpy(local_files[n_files], dir -> d_name);
                     strcpy(msg.data.filelist_rep.files[n_files++], dir -> d_name); 
                 }
             }
             closedir(files);
         }
+        n_local_files = n_files;
+        pthread_mutex_unlock(&lock);
+
         msg.data.filelist_rep.n_files = n_files;
 
-        n_local_files = n_files;
 
         for(int i = 0; i < n_groups; i++) 
             strcpy(msg.data.filelist_rep.visited_grps[i], groups[i].name);
@@ -169,9 +188,11 @@ void share_filenames(bool is_infinite, char group_name[30]) {
             }
         }
         if(!is_infinite) 
-            return;
+            return NULL;
         sleep(60);
     }
+
+    return NULL;
 }
 
 void create_group(char group_name[30], char group_ip[40], in_port_t group_port, int joinflag) {
@@ -319,7 +340,7 @@ void find_join_group(char group_name[30], int joinflag) {
     msg.src_port = addr.sin_port;
 
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(PORT);
+    addr.sin_port = htons(TEST_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
 
     sendto(sock_fd, &msg, sizeof(msg), 0, (struct sockaddr *) &addr, sizeof(addr));
@@ -375,17 +396,19 @@ void receive_text(int fd, struct multicast_msg * msg) {
     for (int i = 0; i < n_groups; ++i) {
         if (groups[i].fd == fd) {
             char ip[40];
-            inet_ntop(AF_INET, &(groups[i].addr), ip, 40);
-            printf(">> Received from %s:%d in group '%s'\n>  %s\n", ip, groups[i].port, groups[i].name, msg->data.text.text);
+            inet_ntop(AF_INET, &(msg->src_addr), ip, 40);
+            printf(">> Received from %s:%d in group '%s'\n>  %s\n\n", ip, msg->src_port, groups[i].name, msg->data.text.text);
             return;
         }
     }
 }
 
 void request_file(char filename[30]) {
+    pthread_mutex_lock(&lock);
     for (int i = 0; i < n_local_files; ++i) {
         if (strcmp(local_files[i], filename) == 0) {
             printf("! File '%s' already exists. Try again with different file name...\n\n", filename);
+            pthread_mutex_unlock(&lock);
             return;
         }
     }
@@ -422,17 +445,21 @@ void request_file(char filename[30]) {
     }
 
     sigaction(SIGALRM, &(struct sigaction){handle_sigalarm}, NULL);
-    alarm(60);
+    alarm(REQFILE_TIMEOUT);
     int conn_fd = accept(tmp_sock_fd, &addr, &addr_len);
     if (conn_fd == -1 && errno == EINTR) {
         printf(">> Requested file '%s' not found in any group\n\n", filename);
+        // sigaction(SIGALRM, &(struct sigaction){SIG_DFL}, NULL);
         close(tmp_sock_fd);
+        pthread_mutex_unlock(&lock);
         return;
     }
+    alarm(0);
     sigaction(SIGALRM, &(struct sigaction){SIG_DFL}, NULL);
 
     char filename_path[50] = "";
-    strcat(filename_path, "data/");
+    strcat(filename_path, FOLDER);
+    strcat(filename_path, "/");
     strcat(filename_path, filename);
 
     FILE * fp = fopen(filename_path, "w");
@@ -447,6 +474,7 @@ void request_file(char filename[30]) {
     inet_ntop(AF_INET, &(addr.sin_addr), ip, 40);
 
     strcpy(local_files[n_local_files++], filename);
+    pthread_mutex_unlock(&lock);
     printf(">> Received file '%s' from %s:%d\n\n", filename, ip, ntohs(addr.sin_port));
 
     fclose(fp);
@@ -460,19 +488,22 @@ void reply_file(int fd, struct multicast_msg * msg) {
     addr.sin_addr = msg->src_addr;
     addr.sin_port = htons(msg->src_port);
     
+    pthread_mutex_lock(&lock);
     for (int i = 0; i < n_local_files; ++i) {
         if (strcmp(local_files[i], (msg->data).file_req.file_name) == 0) {
             int tmp_sock_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             if (connect(tmp_sock_fd, &addr, sizeof(addr)) == -1) {
                 close(tmp_sock_fd);
+                pthread_mutex_unlock(&lock);
                 return;
             }
 
             char filename_path[50] = "";
-            strcat(filename_path, "data/");
+            strcat(filename_path, FOLDER);
+            strcat(filename_path, "/");
             strcat(filename_path, (msg->data).file_req.file_name);
 
-            FILE * fp = fopen((msg->data).file_req.file_name, "r");
+            FILE * fp = fopen(filename_path, "r");
             
             char buf[500];
             size_t n_bytes = 0;
@@ -482,9 +513,10 @@ void reply_file(int fd, struct multicast_msg * msg) {
             
             fclose(fp);
             close(tmp_sock_fd);
-            return;
+            break;
         }
     }
+    pthread_mutex_unlock(&lock);
 }
 
 void create_poll(char group_name[30], char question[100], int n_options, char options[10][100]) {
@@ -511,12 +543,10 @@ void create_poll(char group_name[30], char question[100], int n_options, char op
             return;
         }
     }
-
-    // Receive replies
 }
 
 void get_list_files(char group_name[30]) {
-    share_filenames(false, group_name);
+    share_filenames(group_name);
 }
 
 void list_files() {
@@ -746,18 +776,18 @@ int main() {
     addr.sin_port = htons(PORT);
     
     if (bind(sock_fd, &addr, addr_len) == -1)
-        err_exit("Error in bind. Exiting...\n");
+        err_exit("! Error in bind. Exiting...\n");
 
     int loop = TEST_LOOPBACK;
     if (setsockopt(sock_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) == -1) {
         close(sock_fd);
-        err_exit("Error in setsockopt. Try again...\n\n");
+        err_exit("! Error in setsockopt. Exiting...\n\n");
     }
 
     int bcast = 1;
     if (setsockopt(sock_fd, SOL_SOCKET, SO_BROADCAST, &bcast, sizeof(bcast)) == -1) {
         close(sock_fd);
-        err_exit("Error in setsockopt. Try again...\n\n");
+        err_exit("! Error in setsockopt. Exiting...\n\n");
     }
 
     char hostname[100];
@@ -767,12 +797,19 @@ int main() {
     host_entry = gethostbyname(hostname);
     host_addr = *((struct in_addr*) host_entry->h_addr_list[0]);
 
-    pid_t child_pid = fork();
-
-    if(child_pid == 0) {
-        share_filenames(true, NULL);
-        _exit(EXIT_SUCCESS);
+    if (pthread_mutex_init(&lock, NULL) != 0) {
+        close(sock_fd);
+        err_exit("! Error Mutex init. Exiting...\n\n");
     }
+
+    pthread_t child_thread;
+    pthread_create(&child_thread, NULL, share_filenames, NULL);
+    
+    // pid_t child_pid = fork();
+    // if(child_pid == 0) {
+    //     share_filenames(true, NULL);
+    //     _exit(EXIT_SUCCESS);
+    // }
 
     struct epoll_event event, trig_events[50];
     epoll_fd = epoll_create1(0);
@@ -806,6 +843,7 @@ int main() {
                 }
                 if (i == 0)
                     continue;
+                
                 // getline(&cmd_buf, &cmd_len, stdin);
                 // if (cmd_buf[cmd_len - 1] == '\n')
                 //     cmd_buf[cmd_len - 1] = '\0';
@@ -825,6 +863,8 @@ int main() {
     for (int i = 0; i < n_groups; ++i) {
         close(groups[i].fd);
     }
+
+    pthread_join(child_thread, NULL);
 
     free(cmd_buf);
     close(epoll_fd);
