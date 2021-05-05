@@ -11,13 +11,13 @@ This exercise develops a Bash-like shell with support for chaining process via p
 
 This exercise develops a shell which extends to a cluster of machines operating over the network. There is a central server which coordinates the operations and there are multiple clients/nodes which perform the bash commands and communicate to other nodes via server.
 
+# [P3 Group Chat Management System](./P3/)
+
+This exercise develops a group chat system which allows users to create groups, list all groups on the server, join groups, send private and group messages and receive messages in online as well as offline mode. The chat system also implements an option which can be set for a group where users who join a group after `<t>` seconds from the time of message creation also receive it.
+
 # [P4 RTT](./P4/)
 
 This exercise develops a program which reads a text file with one IP(v4/v6) address per line and calculates RTT values of these IPs and prints them in a line. This exercise made use of raw sockets and ICMP ECHO messages to calculate these values. This exercise uses epoll for I/O Multiplexing which is one of the fastest ways for I/O multiplexing. It sends three ICMP ECHO messages to each of the hosts and prints their RTT values only if all the messages are received back.
-
-# [P4 Group Chat Management System](./P3/)
-
-This exercise develops a group chat system which allows users to create groups, list all groups on server, join group, send private and group messages and receive messages in online as well as offline mode. The chat system also implements a option which can be set for a group where users who joins a group after < t > seconds from the time of message creation also receives it.
 
 # [P5 Pre-Fork Server](./P5/)
 
