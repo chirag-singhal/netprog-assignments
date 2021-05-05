@@ -1,4 +1,4 @@
-# P3 Group Communication among System
+# P6 Group Communication among System
 
 This exercise develops a P2P group communication system which allows users to create groups, join groups, send group messages and receive messages, request files and create polls in groups. The group communication among systems uses IP multicasting and broadcasting for the features. There is no central server to store data.
 
